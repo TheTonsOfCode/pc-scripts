@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# Find unnecessary directories and ask for confirmation before deletion
+folders=$(find . -type d \( -name "node_modules" -o -name ".next" -o -name ".turbo" -o -name "dist" -o -name ".parcel-cache" -o -name ".eslintcache" -o -name ".cache" \) -prune)
+
+if [ -z "$folders" ]; then
+    echo "No directories found for deletion."
+    exit 0
+fi
+
+echo "Found directories to delete:"
+echo "$folders"
+
+echo "Are you sure you want to delete them? (yes/no)"
+read -r answer
+
+if [[ "$answer" == "yes" ]]; then
+    echo "$folders" | xargs rm -rf
+    echo "Selected directories have been deleted."
+else
+    echo "Deletion canceled."
+fi
