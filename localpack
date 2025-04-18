@@ -5,10 +5,14 @@
 LOCALPACKS_DIR="$HOME/.localpacks"
 # File storing alias and version information
 DATA_FILE="$LOCALPACKS_DIR/data.json"
+# Configuration filename
+CONFIG_FILE="localpack.json"
 
 # --- Helper Functions ---
 function print_usage {
   echo "Usage:"
+  echo "  localpack [pack <alias> [directory]|i|install <alias>|help]"
+  echo "  localpack                           - Uses localpack.json to pack or install."
   echo "  localpack pack <alias> [directory]  - Builds, packs, versions, and stores the package."
   echo "                                      If [directory] is provided, 'npm pack' runs inside it."
   echo "                                      Replaces '/' with '-' in the saved .tgz filename."
@@ -286,6 +290,59 @@ function install_package {
   return 0
 }
 
+function handle_config_pack {
+  if [ -f "$CONFIG_FILE" ]; then
+    echo "--- Found $CONFIG_FILE. Attempting to pack using its configuration... ---"
+    local config=$(cat "$CONFIG_FILE")
+    local alias=$(echo "$config" | jq -r '.alias')
+    local directory=$(echo "$config" | jq -r '.directory')
+
+    if [ -n "$alias" ] && [ "$alias" != "null" ]; then
+      echo "--- Packing with alias: '$alias'"
+      if [ -n "$directory" ] && [ "$directory" != "null" ]; then
+        echo "--- Using directory: '$directory'"
+        pack_package "$alias" "$directory"
+      else
+        pack_package "$alias"
+      fi
+    else
+      echo "Warning: 'alias' not found or is null in $CONFIG_FILE. Ignoring."
+      print_usage
+      return 1
+    fi
+  else
+    echo "Warning: $CONFIG_FILE not found. Please specify a command or create the configuration file."
+    print_usage
+    return 1
+  fi
+}
+
+function handle_config_install {
+  if [ -f "$CONFIG_FILE" ]; then
+    echo "--- Found $CONFIG_FILE. Attempting to install using its configuration... ---"
+    local config=$(cat "$CONFIG_FILE")
+    local packs_json=$(echo "$config" | jq -r '.packs')
+
+    if [ -n "$packs_json" ] && [ "$packs_json" != "null" ]; then
+      # Iterate through the array of packages using jq
+      while IFS= read -r alias; do
+        alias=$(echo "$alias" | tr -d '" ') # Clean up quotes and spaces
+        echo "--- Attempting to install: '$alias' ---"
+        install_package "$alias"
+      done <<< "$(echo "$config" | jq -r '.packs[]')"
+      echo "--- Installation process complete. ---"
+    else
+      echo "Warning: 'packs' key not found or is null in $CONFIG_FILE. Ignoring."
+      print_usage
+      return 1
+    fi
+  else
+    echo "Warning: $CONFIG_FILE not found. Please specify a command or create the configuration file."
+    print_usage
+    return 1
+  fi
+}
+
 # --- Main Script Logic ---
 
 # Check dependencies
@@ -297,26 +354,50 @@ COMMAND=$1
 ALIAS=$2
 ARG3=$3 # Could be the directory for 'pack'
 
-case "$COMMAND" in
-  pack)
-    pack_package "$ALIAS" "$ARG3"
-    ;;
-
-  i|install)
-    install_package "$ALIAS"
-    ;;
-
-  help|--help|-h)
-    # Display help message
-    print_usage
-    ;;
-
-  *)
-    # Handle unknown commands
-    echo "Error: Unknown command '$COMMAND'."
+if [ -z "$COMMAND" ]; then
+  # No command provided, check for localpack.json
+  if [ -f "$CONFIG_FILE" ]; then
+    config_type=$(jq -r 'if has("alias") then "pack" elif has("packs") then "install" else "unknown" end' "$CONFIG_FILE")
+    case "$config_type" in
+      "pack")
+        handle_config_pack
+        ;;
+      "install")
+        handle_config_install
+        ;;
+      "unknown")
+        echo "Warning: $CONFIG_FILE found, but does not contain 'alias' or 'packs' configuration."
+        print_usage
+        exit 1
+        ;;
+    esac
+  else
+    echo "Warning: No command specified and $CONFIG_FILE not found."
     print_usage
     exit 1
-    ;;
-esac
+  fi
+else
+  case "$COMMAND" in
+    pack)
+      pack_package "$ALIAS" "$ARG3"
+      ;;
+
+    i|install)
+      install_package "$ALIAS"
+      ;;
+
+    help|--help|-h)
+      # Display help message
+      print_usage
+      ;;
+
+    *)
+      # Handle unknown commands
+      echo "Error: Unknown command '$COMMAND'."
+      print_usage
+      exit 1
+      ;;
+  esac
+fi
 
 exit 0
