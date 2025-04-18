@@ -245,6 +245,14 @@ function install_package {
     return 1
   fi
 
+  # Detect '%' prefix to install as devDependency
+  local install_flag=""
+  if [[ "$alias" =~ ^% ]]; then
+    install_flag="--save-dev"
+    alias="${alias:1}"
+    echo "--- Detected '%' prefix; installing as devDependency for alias '$alias' ---"
+  fi
+
   # Read the alias information from the data file
   local alias_info=$(get_alias_info "$alias")
 
@@ -291,12 +299,12 @@ function install_package {
   fi
 
   # Install the package using npm
-  echo "--- Installing '$original_package_name' version $latest_version from '$package_path'... ---"
-  if ! npm install "$package_path"; then
-    echo "Error: 'npm install $package_path' failed."
+  echo "--- Installing '$original_package_name' version $latest_version from '$package_path' $install_flag... ---"
+  if ! npm install $install_flag "$package_path"; then
+    echo "Error: 'npm install $install_flag $package_path' failed."
     return 1
   fi
-  echo "--- Successfully installed $alias (package '$original_package_name' version $latest_version) ---"
+  echo "--- Successfully installed $alias (package '$original_package_name' version $latest_version) ${install_flag:+as devDependency} ---"
   return 0
 }
 

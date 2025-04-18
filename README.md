@@ -45,7 +45,19 @@ Let's say you have two projects: **Project A** which you want to package, and **
 
 If, for example, the `my-lib` package is built into a `dist` directory, run the command from the project root as follows:
 
-`localpack pack my-lib dist`
+```
+localpack pack my-lib dist
+```
+
+### Prefixing with `%` for Dev Dependencies
+
+When installing a local package, you can prefix the alias with `%` to install it as a development dependency. For example:
+
+```bash
+localpack i %my-lib
+```
+
+This will strip the `%` and install the latest `my-lib` package version using `npm install --save-dev`.
 
 ### localpack Convenience Configuration
 
@@ -69,11 +81,11 @@ Create an `localpack.json` file in the root directory of Project A with the foll
 
 Create an `localpack.json` file in the root directory of Project B with the following structure:
 
-```json
+```json5
 {
   "packs": [
     "package-alias-to-install-1",
-    "package-alias-to-install-2"
+    "%package-alias-to-install-2" // <- as development dependency
   ]
 }
 ```
@@ -101,3 +113,4 @@ With these `localpack.json` files in place, the usage becomes even simpler:
     If a `"packs"` key is found in `localpack.json`, `localpack` will automatically install each of the packages listed in the `"packs"` array.
 
 5.  **Updating the package:** If you make changes to Project A, navigate to its root directory and run `localpack`. Then, navigate back to Project B and run `localpack` to install the updated package.
+
