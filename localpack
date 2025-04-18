@@ -6,7 +6,7 @@ LOCALPACKS_DIR="$HOME/.localpacks"
 # File storing alias and version information
 DATA_FILE="$LOCALPACKS_DIR/data.json"
 # Configuration filename
-CONFIG_FILE="localpack.json"
+CONFIG_FILE=".localpack.json"
 
 # --- Helper Functions ---
 function print_usage {
