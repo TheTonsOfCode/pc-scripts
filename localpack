@@ -96,13 +96,7 @@ function pack_package {
     return 1
   fi
 
-  # Check for package.json in the current directory (or provided directory)
-  local package_json_path
-  if [ -n "$directory" ]; then
-    package_json_path="$directory/package.json"
-  else
-    package_json_path="package.json"
-  fi
+  local package_json_path="package.json"
 
   if [ ! -f "$package_json_path" ]; then
     echo "Error: 'package.json' not found at '$package_json_path'."
