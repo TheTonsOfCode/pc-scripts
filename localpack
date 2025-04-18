@@ -82,6 +82,210 @@ function update_alias_info {
   write_data "$updated_data"
 }
 
+function pack_package {
+  local alias="$1"
+  local directory="$2"
+
+  if [ -z "$alias" ]; then
+    echo "Error: Alias is required for 'pack' command."
+    print_usage
+    return 1
+  fi
+
+  # Check for package.json in the current directory (or provided directory)
+  local package_json_path
+  if [ -n "$directory" ]; then
+    package_json_path="$directory/package.json"
+  else
+    package_json_path="package.json"
+  fi
+
+  if [ ! -f "$package_json_path" ]; then
+    echo "Error: 'package.json' not found at '$package_json_path'."
+    return 1
+  fi
+
+  # Read ORIGINAL package name from package.json
+  local original_package_name=$(jq -r '.name' "$package_json_path")
+  if [ -z "$original_package_name" ] || [ "$original_package_name" == "null" ]; then
+      echo "Error: Could not read package name from '$package_json_path'."
+      return 1
+  fi
+  # Create a filesystem-safe version of the package name
+  local safe_package_name=${alias//\//-}
+  echo "--- Original package name: $original_package_name ---"
+  echo "--- Filesystem-safe name: $safe_package_name ---"
+
+
+  # Build the package
+  echo "--- Running 'npm run build'... ---"
+  if ! npm run build; then
+    echo "Error: 'npm run build' failed."
+    return 1
+  fi
+  echo "--- Build successful ---"
+
+  local original_pwd=$(pwd)
+  local pack_dir="." # Default pack location is current directory
+  local pack_in_subdir=false
+
+  # Check if a target directory for 'npm pack' was provided
+  if [ -n "$directory" ]; then
+    if [ -d "$directory" ]; then
+      pack_dir="$directory"
+      echo "--- Changing directory to '$pack_dir' for packing... ---"
+      if ! cd "$pack_dir"; then
+          echo "Error: Failed to change directory to '$pack_dir'."
+          return 1
+      fi
+      pack_in_subdir=true
+    else
+      echo "Error: Provided directory '$directory' does not exist."
+      cd "$original_pwd" || return 1 # Go back if cd failed before exiting
+      return 1
+    fi
+  fi
+
+  # Pack the package and capture the filename (last line of npm pack output)
+  echo "--- Running 'npm pack' in '$PWD'... ---"
+  # Note: npm pack might create a filename based on ORIGINAL_PACKAGE_NAME
+  local packed_filename_relative=$(npm pack | tail -n 1)
+  local npm_pack_exit_code=$?
+
+  # Store the absolute path to the packed file *before* potentially changing back
+  local packed_file_abs_path="$PWD/$packed_filename_relative"
+
+  # Return to the original directory if we changed into a subdirectory
+  if $pack_in_subdir; then
+    echo "--- Returning to original directory '$original_pwd'... ---"
+    if ! cd "$original_pwd"; then
+        echo "Error: Failed to return to the original directory '$original_pwd'."
+        # Try to continue anyway, as the file is already packed
+    fi
+  fi
+
+  # Check the result of npm pack
+  if [ $npm_pack_exit_code -ne 0 ] || [ -z "$packed_filename_relative" ] || [ ! -f "$packed_file_abs_path" ]; then
+    echo "Error: 'npm pack' failed or did not produce a file."
+    echo "Expected file at: $packed_file_abs_path"
+    ls -la "$(dirname "$packed_file_abs_path")" # List directory contents for debugging if pack failed
+    return 1
+  fi
+  # Check if the generated file name actually matches the expected safe name convention from npm>=7
+  # Example: npm pack might generate '@org-pkg-1.0.0.tgz' or 'org-pkg-1.0.0.tgz'
+  # We will rename it consistently using our SAFE_PACKAGE_NAME later.
+
+  # Read the current version for the alias, defaulting to 0 if not found
+  local current_version=$(jq -r --arg alias "$alias" '.[$alias].version // 0' "$DATA_FILE")
+  local new_version=$((current_version + 1))
+  echo "--- Versioning: '$alias' -> $new_version ---"
+
+  # --- Clean up previous version ---
+  if [ "$current_version" -gt 0 ]; then
+      # Construct the filename of the previous version using the SAFE name
+      local previous_tgz_filename="${safe_package_name}-${current_version}.tgz"
+      local previous_tgz_path="$LOCALPACKS_DIR/$previous_tgz_filename"
+      # Check if the previous version file exists and remove it
+      if [ -f "$previous_tgz_path" ]; then
+          echo "--- Removing previous version: $previous_tgz_path ---"
+          if ! rm "$previous_tgz_path"; then
+              # Log a warning but continue, as cleanup failure isn't critical
+              echo "Warning: Failed to remove previous version at $previous_tgz_path."
+          fi
+      else
+          # Inform user if no previous file was found
+          echo "--- No previous version file found for $alias (safe name $safe_package_name) version $current_version to remove. ---"
+      fi
+  else
+       # Inform user this is the first tracked version for the alias
+      echo "--- This is the first tracked version ($new_version), no previous version to remove. ---"
+  fi
+
+  # --- Move and rename the newly packed file ---
+  # Construct the NEW filename using the SAFE name
+  local new_tgz_filename="${safe_package_name}-${new_version}.tgz"
+  local target_tgz_path="$LOCALPACKS_DIR/$new_tgz_filename"
+
+  echo "--- Moving '$packed_file_abs_path' to '$target_tgz_path'... ---"
+  # The move command now uses the TARGET_TGZ_PATH which has the safe filename
+  if ! mv "$packed_file_abs_path" "$target_tgz_path"; then
+    echo "Error: Failed to move the packed file."
+    # Add more debugging info if move fails
+    echo "Source: $packed_file_abs_path"
+    echo "Target: $target_tgz_path"
+    echo "Source exists? $(ls -l "$packed_file_abs_path")"
+    echo "Target directory exists? $(ls -ld "$LOCALPACKS_DIR")"
+    return 1
+  fi
+
+  # --- Update the data file with the new version info ---
+  # IMPORTANT: Store the ORIGINAL package name in the JSON data
+  echo "--- Updating alias info in '$DATA_FILE' (using original name '$original_package_name')... ---"
+  if update_alias_info "$alias" "$original_package_name" "$new_version"; then
+      echo "--- Successfully packed and stored '$original_package_name' as '$alias' version $new_version ---"
+      echo "--- Saved to: $target_tgz_path (using safe name $safe_package_name) ---"
+      return 0
+  else
+      echo "Error: Failed to update $DATA_FILE."
+      # Optional: Consider attempting to revert the move if the JSON update fails
+      return 1
+  fi
+}
+
+function install_package {
+  local alias="$1"
+
+  if [ -z "$alias" ]; then
+    echo "Error: Alias is required for 'install' command."
+    print_usage
+    return 1
+  fi
+
+  # Read the alias information from the data file
+  local alias_info=$(get_alias_info "$alias")
+
+  # Check if alias exists in the data
+  if [ "$alias_info" == "null" ] || [ -z "$alias_info" ]; then
+    echo "Error: Alias '$alias' not found in $DATA_FILE."
+    return 1
+  fi
+
+  # Extract ORIGINAL package name and latest version from the alias info
+  local original_package_name=$(echo "$alias_info" | jq -r '.packageName')
+  local latest_version=$(echo "$alias_info" | jq -r '.version')
+
+  # Validate the extracted data
+  if [ -z "$original_package_name" ] || [ "$original_package_name" == "null" ] || [ -z "$latest_version" ] || [ "$latest_version" == "null" ]; then
+     echo "Error: Incomplete data found for alias '$alias' in $DATA_FILE."
+     return 1
+  fi
+
+  # Create the filesystem-safe version of the package name for filename lookup
+  local safe_package_name=${alias//\//-}
+
+  # Construct the full path to the package .tgz file using the SAFE name
+  local package_filename="${safe_package_name}-${latest_version}.tgz"
+  local package_path="$LOCALPACKS_DIR/$package_filename"
+
+  # Check if the target package file exists
+  if [ ! -f "$package_path" ]; then
+    echo "Error: Package file for '$alias' (version $latest_version) not found."
+    echo "       Original name: $original_package_name"
+    echo "       Expected safe filename: $package_filename"
+    echo "       Expected path: $package_path"
+    return 1
+  fi
+
+  # Install the package using npm
+  echo "--- Installing '$original_package_name' version $latest_version from '$package_path'... ---"
+  if ! npm install "$package_path"; then
+    echo "Error: 'npm install $package_path' failed."
+    return 1
+  fi
+  echo "--- Successfully installed $alias (package '$original_package_name' version $latest_version) ---"
+  return 0
+}
+
 # --- Main Script Logic ---
 
 # Check dependencies
@@ -95,195 +299,11 @@ ARG3=$3 # Could be the directory for 'pack'
 
 case "$COMMAND" in
   pack)
-    # --- 'pack' command logic ---
-    if [ -z "$ALIAS" ]; then
-      echo "Error: Alias is required for 'pack' command."
-      print_usage
-      exit 1
-    fi
-
-    # Check for package.json in the current directory
-    if [ ! -f "package.json" ]; then
-      echo "Error: 'package.json' not found in the current directory ($(pwd))."
-      exit 1
-    fi
-
-    # Read ORIGINAL package name from package.json
-    ORIGINAL_PACKAGE_NAME=$(jq -r '.name' package.json)
-    if [ -z "$ORIGINAL_PACKAGE_NAME" ] || [ "$ORIGINAL_PACKAGE_NAME" == "null" ]; then
-        echo "Error: Could not read package name from package.json."
-        exit 1
-    fi
-    # Create a filesystem-safe version of the package name
-    SAFE_PACKAGE_NAME=${ALIAS//\//-} # Replace all '/' with '-'
-    echo "--- Original package name: $ORIGINAL_PACKAGE_NAME ---"
-    echo "--- Filesystem-safe name: $SAFE_PACKAGE_NAME ---"
-
-
-    # Build the package
-    echo "--- Running 'npm run build'... ---"
-    if ! npm run build; then
-      echo "Error: 'npm run build' failed."
-      exit 1
-    fi
-    echo "--- Build successful ---"
-
-    ORIGINAL_PWD=$(pwd)
-    PACK_DIR="." # Default pack location is current directory
-    PACK_IN_SUBDIR=false
-
-    # Check if a target directory for 'npm pack' was provided
-    if [ -n "$ARG3" ]; then
-      if [ -d "$ARG3" ]; then
-        PACK_DIR="$ARG3"
-        echo "--- Changing directory to '$PACK_DIR' for packing... ---"
-        if ! cd "$PACK_DIR"; then
-            echo "Error: Failed to change directory to '$PACK_DIR'."
-            exit 1
-        fi
-        PACK_IN_SUBDIR=true
-      else
-        echo "Error: Provided directory '$ARG3' does not exist."
-        cd "$ORIGINAL_PWD" || exit 1 # Go back if cd failed before exiting
-        exit 1
-      fi
-    fi
-
-    # Pack the package and capture the filename (last line of npm pack output)
-    echo "--- Running 'npm pack' in '$PWD'... ---"
-    # Note: npm pack might create a filename based on ORIGINAL_PACKAGE_NAME
-    PACKED_FILENAME_RELATIVE=$(npm pack | tail -n 1)
-    NPM_PACK_EXIT_CODE=$?
-
-    # Store the absolute path to the packed file *before* potentially changing back
-    PACKED_FILE_ABS_PATH="$PWD/$PACKED_FILENAME_RELATIVE"
-
-    # Return to the original directory if we changed into a subdirectory
-    if $PACK_IN_SUBDIR; then
-      echo "--- Returning to original directory '$ORIGINAL_PWD'... ---"
-      if ! cd "$ORIGINAL_PWD"; then
-          echo "Error: Failed to return to the original directory '$ORIGINAL_PWD'."
-          # Try to continue anyway, as the file is already packed
-      fi
-    fi
-
-    # Check the result of npm pack
-    if [ $NPM_PACK_EXIT_CODE -ne 0 ] || [ -z "$PACKED_FILENAME_RELATIVE" ] || [ ! -f "$PACKED_FILE_ABS_PATH" ]; then
-      echo "Error: 'npm pack' failed or did not produce a file."
-      echo "Expected file at: $PACKED_FILE_ABS_PATH"
-      ls -la "$(dirname "$PACKED_FILE_ABS_PATH")" # List directory contents for debugging if pack failed
-      exit 1
-    fi
-    # Check if the generated file name actually matches the expected safe name convention from npm>=7
-    # Example: npm pack might generate '@org-pkg-1.0.0.tgz' or 'org-pkg-1.0.0.tgz'
-    # We will rename it consistently using our SAFE_PACKAGE_NAME later.
-
-    # Read the current version for the alias, defaulting to 0 if not found
-    CURRENT_VERSION=$(jq -r --arg alias "$ALIAS" '.[$alias].version // 0' "$DATA_FILE")
-    NEW_VERSION=$((CURRENT_VERSION + 1))
-    echo "--- Versioning: '$ALIAS' -> $NEW_VERSION ---"
-
-    # --- Clean up previous version ---
-    if [ "$CURRENT_VERSION" -gt 0 ]; then
-        # Construct the filename of the previous version using the SAFE name
-        PREVIOUS_TGZ_FILENAME="${SAFE_PACKAGE_NAME}-${CURRENT_VERSION}.tgz"
-        PREVIOUS_TGZ_PATH="$LOCALPACKS_DIR/$PREVIOUS_TGZ_FILENAME"
-        # Check if the previous version file exists and remove it
-        if [ -f "$PREVIOUS_TGZ_PATH" ]; then
-            echo "--- Removing previous version: $PREVIOUS_TGZ_PATH ---"
-            if ! rm "$PREVIOUS_TGZ_PATH"; then
-                # Log a warning but continue, as cleanup failure isn't critical
-                echo "Warning: Failed to remove previous version at $PREVIOUS_TGZ_PATH."
-            fi
-        else
-            # Inform user if no previous file was found
-            echo "--- No previous version file found for $ALIAS (safe name $SAFE_PACKAGE_NAME) version $CURRENT_VERSION to remove. ---"
-        fi
-    else
-         # Inform user this is the first tracked version for the alias
-        echo "--- This is the first tracked version ($NEW_VERSION), no previous version to remove. ---"
-    fi
-
-    # --- Move and rename the newly packed file ---
-    # Construct the NEW filename using the SAFE name
-    NEW_TGZ_FILENAME="${SAFE_PACKAGE_NAME}-${NEW_VERSION}.tgz"
-    TARGET_TGZ_PATH="$LOCALPACKS_DIR/$NEW_TGZ_FILENAME"
-
-    echo "--- Moving '$PACKED_FILE_ABS_PATH' to '$TARGET_TGZ_PATH'... ---"
-    # The move command now uses the TARGET_TGZ_PATH which has the safe filename
-    if ! mv "$PACKED_FILE_ABS_PATH" "$TARGET_TGZ_PATH"; then
-      echo "Error: Failed to move the packed file."
-      # Add more debugging info if move fails
-      echo "Source: $PACKED_FILE_ABS_PATH"
-      echo "Target: $TARGET_TGZ_PATH"
-      echo "Source exists? $(ls -l "$PACKED_FILE_ABS_PATH")"
-      echo "Target directory exists? $(ls -ld "$LOCALPACKS_DIR")"
-      exit 1
-    fi
-
-    # --- Update the data file with the new version info ---
-    # IMPORTANT: Store the ORIGINAL package name in the JSON data
-    echo "--- Updating alias info in '$DATA_FILE' (using original name '$ORIGINAL_PACKAGE_NAME')... ---"
-    if update_alias_info "$ALIAS" "$ORIGINAL_PACKAGE_NAME" "$NEW_VERSION"; then
-        echo "--- Successfully packed and stored '$ORIGINAL_PACKAGE_NAME' as '$ALIAS' version $NEW_VERSION ---"
-        echo "--- Saved to: $TARGET_TGZ_PATH (using safe name $SAFE_PACKAGE_NAME) ---"
-    else
-        echo "Error: Failed to update $DATA_FILE."
-        # Optional: Consider attempting to revert the move if the JSON update fails
-        exit 1
-    fi
+    pack_package "$ALIAS" "$ARG3"
     ;;
 
   i|install)
-    # --- 'install' command logic ---
-    if [ -z "$ALIAS" ]; then
-      echo "Error: Alias is required for 'install' command."
-      print_usage
-      exit 1
-    fi
-
-    # Read the alias information from the data file
-    ALIAS_INFO=$(get_alias_info "$ALIAS")
-
-    # Check if alias exists in the data
-    if [ "$ALIAS_INFO" == "null" ] || [ -z "$ALIAS_INFO" ]; then
-      echo "Error: Alias '$ALIAS' not found in $DATA_FILE."
-      exit 1
-    fi
-
-    # Extract ORIGINAL package name and latest version from the alias info
-    ORIGINAL_PACKAGE_NAME=$(echo "$ALIAS_INFO" | jq -r '.packageName')
-    LATEST_VERSION=$(echo "$ALIAS_INFO" | jq -r '.version')
-
-    # Validate the extracted data
-    if [ -z "$ORIGINAL_PACKAGE_NAME" ] || [ "$ORIGINAL_PACKAGE_NAME" == "null" ] || [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" == "null" ]; then
-       echo "Error: Incomplete data found for alias '$ALIAS' in $DATA_FILE."
-       exit 1
-    fi
-
-    # Create the filesystem-safe version of the package name for filename lookup
-    SAFE_PACKAGE_NAME=${ALIAS//\//-}
-
-    # Construct the full path to the package .tgz file using the SAFE name
-    PACKAGE_FILENAME="${SAFE_PACKAGE_NAME}-${LATEST_VERSION}.tgz"
-    PACKAGE_PATH="$LOCALPACKS_DIR/$PACKAGE_FILENAME"
-
-    # Check if the target package file exists
-    if [ ! -f "$PACKAGE_PATH" ]; then
-      echo "Error: Package file for '$ALIAS' (version $LATEST_VERSION) not found."
-      echo "       Original name: $ORIGINAL_PACKAGE_NAME"
-      echo "       Expected safe filename: $PACKAGE_FILENAME"
-      echo "       Expected path: $PACKAGE_PATH"
-      exit 1
-    fi
-
-    # Install the package using npm
-    echo "--- Installing '$ORIGINAL_PACKAGE_NAME' version $LATEST_VERSION from '$PACKAGE_PATH'... ---"
-    if ! npm install "$PACKAGE_PATH"; then
-      echo "Error: 'npm install $PACKAGE_PATH' failed."
-      exit 1
-    fi
-    echo "--- Successfully installed $ALIAS (package '$ORIGINAL_PACKAGE_NAME' version $LATEST_VERSION) ---"
+    install_package "$ALIAS"
     ;;
 
   help|--help|-h)
