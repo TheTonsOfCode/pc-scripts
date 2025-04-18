@@ -1,6 +1,0 @@
-
-
-localpack.json:
-- packing
-- installing few at once
-- checking against package.json if same version then skip

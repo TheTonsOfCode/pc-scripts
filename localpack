@@ -254,7 +254,7 @@ function install_package {
     return 1
   fi
 
-  # Extract ORIGINAL package name and latest version from the alias info
+  # Extract ORIGINAL package name and latest version
   local original_package_name=$(echo "$alias_info" | jq -r '.packageName')
   local latest_version=$(echo "$alias_info" | jq -r '.version')
 
@@ -264,18 +264,28 @@ function install_package {
      return 1
   fi
 
-  # Create the filesystem-safe version of the package name for filename lookup
+  # Construct filesystem-safe name and packed filename
   local safe_package_name=${alias//\//-}
-
-  # Construct the full path to the package .tgz file using the SAFE name
   local package_filename="${safe_package_name}-${latest_version}.tgz"
+
+  # If package.json references this packed file, skip installation
+  if [ -f "package.json" ]; then
+    if jq -e --arg filename "$package_filename" \
+         'any(.dependencies[]?; contains($filename)) or any(.devDependencies[]?; contains($filename))' \
+         package.json > /dev/null; then
+      echo "--- Dependency already references $filename in package.json; skipping npm install ---"
+      return 0
+    fi
+  fi
+
+  # Construct the full path to the package .tgz file
   local package_path="$LOCALPACKS_DIR/$package_filename"
 
-  # Check if the target package file exists
+  # Check if the .tgz file exists
   if [ ! -f "$package_path" ]; then
     echo "Error: Package file for '$alias' (version $latest_version) not found."
     echo "       Original name: $original_package_name"
-    echo "       Expected safe filename: $package_filename"
+    echo "       Expected filename: $package_filename"
     echo "       Expected path: $package_path"
     return 1
   fi
