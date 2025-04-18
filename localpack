@@ -2,19 +2,19 @@
 
 # --- Configuration ---
 # Directory to store packed packages and version data
-IPACKS_DIR="$HOME/.ipacks"
+LOCALPACKS_DIR="$HOME/.localpacks"
 # File storing alias and version information
-DATA_FILE="$IPACKS_DIR/data.json"
+DATA_FILE="$LOCALPACKS_DIR/data.json"
 
 # --- Helper Functions ---
 function print_usage {
   echo "Usage:"
-  echo "  ipack pack <alias> [directory]  - Builds, packs, versions, and stores the package."
+  echo "  localpack pack <alias> [directory]  - Builds, packs, versions, and stores the package."
   echo "                                      If [directory] is provided, 'npm pack' runs inside it."
   echo "                                      Replaces '/' with '-' in the saved .tgz filename."
   echo "                                      Removes the previous .tgz for this alias."
-  echo "  ipack i|install <alias>         - Installs the latest version of the package associated with <alias>."
-  echo "  ipack help                      - Shows this help message."
+  echo "  localpack i|install <alias>         - Installs the latest version of the package associated with <alias>."
+  echo "  localpack help                      - Shows this help message."
 }
 
 function ensure_jq {
@@ -25,9 +25,9 @@ function ensure_jq {
   fi
 }
 
-function ensure_ipacks_setup {
+function ensure_localpacks_setup {
   # Ensure the main storage directory exists
-  mkdir -p "$IPACKS_DIR"
+  mkdir -p "$LOCALPACKS_DIR"
   # Initialize the data file if it doesn't exist
   if [ ! -f "$DATA_FILE" ]; then
     echo "{}" > "$DATA_FILE"
@@ -86,7 +86,7 @@ function update_alias_info {
 
 # Check dependencies
 ensure_jq
-ensure_ipacks_setup
+ensure_localpacks_setup
 
 # Parse arguments
 COMMAND=$1
@@ -187,7 +187,7 @@ case "$COMMAND" in
     if [ "$CURRENT_VERSION" -gt 0 ]; then
         # Construct the filename of the previous version using the SAFE name
         PREVIOUS_TGZ_FILENAME="${SAFE_PACKAGE_NAME}-${CURRENT_VERSION}.tgz"
-        PREVIOUS_TGZ_PATH="$IPACKS_DIR/$PREVIOUS_TGZ_FILENAME"
+        PREVIOUS_TGZ_PATH="$LOCALPACKS_DIR/$PREVIOUS_TGZ_FILENAME"
         # Check if the previous version file exists and remove it
         if [ -f "$PREVIOUS_TGZ_PATH" ]; then
             echo "--- Removing previous version: $PREVIOUS_TGZ_PATH ---"
@@ -207,7 +207,7 @@ case "$COMMAND" in
     # --- Move and rename the newly packed file ---
     # Construct the NEW filename using the SAFE name
     NEW_TGZ_FILENAME="${SAFE_PACKAGE_NAME}-${NEW_VERSION}.tgz"
-    TARGET_TGZ_PATH="$IPACKS_DIR/$NEW_TGZ_FILENAME"
+    TARGET_TGZ_PATH="$LOCALPACKS_DIR/$NEW_TGZ_FILENAME"
 
     echo "--- Moving '$PACKED_FILE_ABS_PATH' to '$TARGET_TGZ_PATH'... ---"
     # The move command now uses the TARGET_TGZ_PATH which has the safe filename
@@ -217,7 +217,7 @@ case "$COMMAND" in
       echo "Source: $PACKED_FILE_ABS_PATH"
       echo "Target: $TARGET_TGZ_PATH"
       echo "Source exists? $(ls -l "$PACKED_FILE_ABS_PATH")"
-      echo "Target directory exists? $(ls -ld "$IPACKS_DIR")"
+      echo "Target directory exists? $(ls -ld "$LOCALPACKS_DIR")"
       exit 1
     fi
 
@@ -266,7 +266,7 @@ case "$COMMAND" in
 
     # Construct the full path to the package .tgz file using the SAFE name
     PACKAGE_FILENAME="${SAFE_PACKAGE_NAME}-${LATEST_VERSION}.tgz"
-    PACKAGE_PATH="$IPACKS_DIR/$PACKAGE_FILENAME"
+    PACKAGE_PATH="$LOCALPACKS_DIR/$PACKAGE_FILENAME"
 
     # Check if the target package file exists
     if [ ! -f "$PACKAGE_PATH" ]; then
