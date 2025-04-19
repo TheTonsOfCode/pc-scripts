@@ -49,7 +49,7 @@ function log_message {
 function print_usage {
   # Usage message should remain plain echo for standard output conventions
   echo "Usage:"
-  echo "  localpack [pack <alias> [directory]|i|install <alias>|help]"
+  echo "  localpack [pack <alias> [directory]|i|install <alias>|discover [root_directory]|help]"
   echo "  localpack                            - Uses localpack.json to pack or install."
   echo "  localpack pack <alias> [directory]   - Builds, packs, versions, and stores the package."
   echo "                                         If [directory] is provided, 'npm pack' runs inside it."
@@ -57,6 +57,8 @@ function print_usage {
   echo "                                         Removes the previous .tgz for this alias."
   echo "  localpack i|install <alias>          - Installs the latest version of the package associated with <alias>."
   echo "                                         Prefix alias with '%' to install as devDependency (e.g., localpack install %my-dev-tool)."
+  echo "  localpack discover [root_directory]  - Recursively searches for .localpack.json files with pack configurations,"
+  echo "                                         lists all found aliases, and asks for confirmation before packing."
   echo "  localpack help                       - Shows this help message."
 }
 
@@ -409,6 +411,106 @@ function handle_config_install {
   fi
 }
 
+function discover_and_pack {
+    local root_dir="${1:-.}" # Use current directory if no directory specified
+
+    if [ ! -d "$root_dir" ]; then
+        log_message "error" "Directory '${COLOR_CYAN}$root_dir${COLOR_RESET}' does not exist."
+        return 1
+    fi
+
+    # Save the current directory to return to it later
+    local original_dir="$(pwd)"
+    local found_configs=0
+    local found_pack_configs=0
+    declare -a pack_configs=() # Array to store paths to pack configs
+    declare -a pack_aliases=() # Array to store aliases from pack configs
+    declare -a pack_dirs=()    # Array to store directories of pack configs
+
+    log_message "info" "Discovering ${COLOR_CYAN}.localpack.json${COLOR_RESET} files with pack configurations in '${COLOR_CYAN}$root_dir${COLOR_RESET}' and its subdirectories..."
+
+    # Use find to locate all .localpack.json files
+    while IFS= read -r config_path; do
+        found_configs=$((found_configs + 1))
+        local config_dir="$(dirname "$config_path")"
+
+        # Temporarily change to directory to check the config
+        cd "$original_dir" || return 1
+        if ! cd "$config_dir"; then
+            log_message "warning" "Failed to access directory '${COLOR_CYAN}$config_dir${COLOR_RESET}'. Skipping this configuration."
+            continue
+        fi
+
+        # Check if it's a pack config (has "alias" key with non-null value)
+        if jq -e '.alias != null' "./$CONFIG_FILE" > /dev/null 2>&1; then
+            local alias=$(jq -r '.alias' "./$CONFIG_FILE")
+            found_pack_configs=$((found_pack_configs + 1))
+            pack_configs+=("$config_path")
+            pack_aliases+=("$alias")
+            pack_dirs+=("$config_dir")
+            log_message "info" "Found pack configuration for alias '${COLOR_CYAN}$alias${COLOR_RESET}' in ${COLOR_CYAN}$config_dir${COLOR_RESET}"
+        fi
+    done < <(find "$root_dir" -name "$CONFIG_FILE" -type f -not -path "*/node_modules/*" 2>/dev/null)
+
+    # Return to the original directory
+    cd "$original_dir" || {
+        log_message "error" "Failed to return to the original directory '${COLOR_CYAN}$original_dir${COLOR_RESET}'."
+        return 1
+    }
+
+    if [ $found_configs -eq 0 ]; then
+        log_message "warning" "No ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET} files found in '${COLOR_CYAN}$root_dir${COLOR_RESET}' or its subdirectories."
+        return 1
+    elif [ $found_pack_configs -eq 0 ]; then
+        log_message "warning" "Found ${COLOR_CYAN}$found_configs${COLOR_RESET} configuration files, but none contain pack configurations with valid aliases."
+        return 1
+    else
+        # Display all discovered pack aliases
+        log_message "success" "Discover operation completed. Found ${COLOR_CYAN}$found_pack_configs${COLOR_RESET} pack configurations:"
+
+        echo "" # Empty line for better readability
+        echo "│ Index │ Alias                    │ Directory"
+        echo "├───────┼──────────────────────────┼──────────────────────────────────"
+
+        for ((i=0; i<${#pack_aliases[@]}; i++)); do
+            printf "│ %-5d │ %-24s │ %s\n" "$((i+1))" "${pack_aliases[$i]}" "${pack_dirs[$i]}"
+        done
+
+        echo "" # Empty line for better readability
+        read -p "Do you want to pack all these packages? (y/N): " confirm
+
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            log_message "info" "Starting pack operations..."
+
+            for ((i=0; i<${#pack_aliases[@]}; i++)); do
+                log_message "info" "Processing ${COLOR_CYAN}$((i+1))/${#pack_aliases[@]}${COLOR_RESET}: alias '${COLOR_CYAN}${pack_aliases[$i]}${COLOR_RESET}'"
+
+                # Change to the directory containing the config
+                cd "$original_dir" || return 1
+                if ! cd "${pack_dirs[$i]}"; then
+                    log_message "error" "Failed to change directory to '${COLOR_CYAN}${pack_dirs[$i]}${COLOR_RESET}'. Skipping this package."
+                    continue
+                fi
+
+                # Run pack operation based on the config
+                handle_config_pack
+            done
+
+            # Return to original directory after all operations
+            cd "$original_dir" || {
+                log_message "error" "Failed to return to the original directory."
+                return 1
+            }
+
+            log_message "success" "Pack operations completed for ${COLOR_CYAN}${#pack_aliases[@]}${COLOR_RESET} packages."
+            return 0
+        else
+            log_message "info" "Pack operations canceled by user."
+            return 0
+        fi
+    fi
+}
+
 
 # --- Main Script Logic ---
 
@@ -456,6 +558,10 @@ else
 
     i|install)
       install_package "$ALIAS" || exit_code=$?
+      ;;
+
+    discover)
+      discover_and_pack "$ALIAS" || exit_code=$?
       ;;
 
     help|--help|-h)
