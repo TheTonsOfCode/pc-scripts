@@ -8,23 +8,62 @@ DATA_FILE="$LOCALPACKS_DIR/data.json"
 # Configuration filename
 CONFIG_FILE=".localpack.json"
 
+# --- Color Definitions ---
+COLOR_RESET='\033[0m'
+COLOR_RED='\033[0;31m'
+COLOR_GREEN='\033[0;32m'
+COLOR_YELLOW='\033[0;33m'
+COLOR_BLUE='\033[0;34m' # Using blue for the prefix
+COLOR_CYAN='\033[0;36m' # Using cyan for info emphasis
+
+# --- Logging Function ---
+# Usage: log_message <level> <message>
+# Levels: info, success, warning, error
+function log_message {
+    local level="$1"
+    local message="$2"
+    local prefix="${COLOR_BLUE}📦 localpack:${COLOR_RESET}"
+
+    case "$level" in
+        info)
+            echo -e "${prefix} ${message}"
+            ;;
+        success)
+            echo -e "${prefix} ${COLOR_GREEN}✔ ${message}${COLOR_RESET}"
+            ;;
+        warning)
+            echo -e "${prefix} ${COLOR_YELLOW}⚠ ${message}${COLOR_RESET}"
+            ;;
+        error)
+            echo -e "${prefix} ${COLOR_RED}✖ ${message}${COLOR_RESET}"
+            ;;
+        *)
+            # Default to info if level is unknown or omitted
+             echo -e "${prefix} ${message}"
+             ;;
+    esac
+}
+
+
 # --- Helper Functions ---
 function print_usage {
+  # Usage message should remain plain echo for standard output conventions
   echo "Usage:"
   echo "  localpack [pack <alias> [directory]|i|install <alias>|help]"
-  echo "  localpack                           - Uses localpack.json to pack or install."
-  echo "  localpack pack <alias> [directory]  - Builds, packs, versions, and stores the package."
-  echo "                                      If [directory] is provided, 'npm pack' runs inside it."
-  echo "                                      Replaces '/' with '-' in the saved .tgz filename."
-  echo "                                      Removes the previous .tgz for this alias."
-  echo "  localpack i|install <alias>         - Installs the latest version of the package associated with <alias>."
-  echo "  localpack help                      - Shows this help message."
+  echo "  localpack                            - Uses localpack.json to pack or install."
+  echo "  localpack pack <alias> [directory]   - Builds, packs, versions, and stores the package."
+  echo "                                         If [directory] is provided, 'npm pack' runs inside it."
+  echo "                                         Replaces '/' with '-' in the saved .tgz filename."
+  echo "                                         Removes the previous .tgz for this alias."
+  echo "  localpack i|install <alias>          - Installs the latest version of the package associated with <alias>."
+  echo "                                         Prefix alias with '%' to install as devDependency (e.g., localpack install %my-dev-tool)."
+  echo "  localpack help                       - Shows this help message."
 }
 
 function ensure_jq {
   # Check if jq command is available
   if ! command -v jq &> /dev/null; then
-    echo "Error: 'jq' command not found. Please install jq (e.g., 'brew install jq')."
+    log_message "error" "'jq' command not found. Please install jq (e.g., 'sudo apt install jq' or 'brew install jq')."
     exit 1
   fi
 }
@@ -35,7 +74,7 @@ function ensure_localpacks_setup {
   # Initialize the data file if it doesn't exist
   if [ ! -f "$DATA_FILE" ]; then
     echo "{}" > "$DATA_FILE"
-    echo "Initialized data file at $DATA_FILE"
+    log_message "info" "Initialized data file at ${COLOR_CYAN}$DATA_FILE${COLOR_RESET}"
   fi
 }
 
@@ -53,7 +92,7 @@ function write_data {
   if echo "$json_content" | jq '.' > "$tmp_file"; then
     mv "$tmp_file" "$DATA_FILE"
   else
-    echo "Error: Failed to write updated data to $DATA_FILE. Invalid JSON generated."
+    log_message "error" "Failed to write updated data to ${COLOR_CYAN}$DATA_FILE${COLOR_RESET}. Invalid JSON generated."
     rm "$tmp_file" # Clean up temp file
     exit 1
   fi
@@ -91,7 +130,7 @@ function pack_package {
   local directory="$2"
 
   if [ -z "$alias" ]; then
-    echo "Error: Alias is required for 'pack' command."
+    log_message "error" "Alias is required for the 'pack' command."
     print_usage
     return 1
   fi
@@ -99,29 +138,29 @@ function pack_package {
   local package_json_path="package.json"
 
   if [ ! -f "$package_json_path" ]; then
-    echo "Error: 'package.json' not found at '$package_json_path'."
+    log_message "error" "'package.json' not found in the current directory (${COLOR_CYAN}$PWD${COLOR_RESET})."
     return 1
   fi
 
   # Read ORIGINAL package name from package.json
   local original_package_name=$(jq -r '.name' "$package_json_path")
   if [ -z "$original_package_name" ] || [ "$original_package_name" == "null" ]; then
-      echo "Error: Could not read package name from '$package_json_path'."
+      log_message "error" "Could not read package name from '${COLOR_CYAN}$package_json_path${COLOR_RESET}'."
       return 1
   fi
   # Create a filesystem-safe version of the package name
   local safe_package_name=${alias//\//-}
-  echo "--- Original package name: $original_package_name ---"
-  echo "--- Filesystem-safe name: $safe_package_name ---"
+  log_message "info" "Original package name: ${COLOR_CYAN}$original_package_name${COLOR_RESET}"
+  log_message "info" "Filesystem-safe name for alias '$alias': ${COLOR_CYAN}$safe_package_name${COLOR_RESET}"
 
 
   # Build the package
-  echo "--- Running 'npm run build'... ---"
+  log_message "info" "Executing 'npm run build'..."
   if ! npm run build; then
-    echo "Error: 'npm run build' failed."
+    log_message "error" "'npm run build' command failed."
     return 1
   fi
-  echo "--- Build successful ---"
+  log_message "success" "Build completed successfully."
 
   local original_pwd=$(pwd)
   local pack_dir="." # Default pack location is current directory
@@ -131,21 +170,21 @@ function pack_package {
   if [ -n "$directory" ]; then
     if [ -d "$directory" ]; then
       pack_dir="$directory"
-      echo "--- Changing directory to '$pack_dir' for packing... ---"
+      log_message "info" "Changing directory to '${COLOR_CYAN}$pack_dir${COLOR_RESET}' for packing..."
       if ! cd "$pack_dir"; then
-          echo "Error: Failed to change directory to '$pack_dir'."
+          log_message "error" "Failed to change directory to '${COLOR_CYAN}$pack_dir${COLOR_RESET}'."
           return 1
       fi
       pack_in_subdir=true
     else
-      echo "Error: Provided directory '$directory' does not exist."
+      log_message "error" "Provided directory '${COLOR_CYAN}$directory${COLOR_RESET}' does not exist."
       cd "$original_pwd" || return 1 # Go back if cd failed before exiting
       return 1
     fi
   fi
 
   # Pack the package and capture the filename (last line of npm pack output)
-  echo "--- Running 'npm pack' in '$PWD'... ---"
+  log_message "info" "Executing 'npm pack' in '${COLOR_CYAN}$PWD${COLOR_RESET}'..."
   # Note: npm pack might create a filename based on ORIGINAL_PACKAGE_NAME
   local packed_filename_relative=$(npm pack | tail -n 1)
   local npm_pack_exit_code=$?
@@ -155,18 +194,19 @@ function pack_package {
 
   # Return to the original directory if we changed into a subdirectory
   if $pack_in_subdir; then
-    echo "--- Returning to original directory '$original_pwd'... ---"
+    log_message "info" "Returning to original directory '${COLOR_CYAN}$original_pwd${COLOR_RESET}'..."
     if ! cd "$original_pwd"; then
-        echo "Error: Failed to return to the original directory '$original_pwd'."
+        log_message "warning" "Failed to return to the original directory '${COLOR_CYAN}$original_pwd${COLOR_RESET}'. Proceeding with packed file operations."
         # Try to continue anyway, as the file is already packed
     fi
   fi
 
   # Check the result of npm pack
   if [ $npm_pack_exit_code -ne 0 ] || [ -z "$packed_filename_relative" ] || [ ! -f "$packed_file_abs_path" ]; then
-    echo "Error: 'npm pack' failed or did not produce a file."
-    echo "Expected file at: $packed_file_abs_path"
-    ls -la "$(dirname "$packed_file_abs_path")" # List directory contents for debugging if pack failed
+    log_message "error" "'npm pack' command failed or did not produce the expected file."
+    log_message "info" "Expected file location (absolute): ${COLOR_CYAN}$packed_file_abs_path${COLOR_RESET}"
+    log_message "info" "Contents of directory '$(dirname "$packed_file_abs_path")':"
+    ls -la "$(dirname "$packed_file_abs_path")" # List directory contents for debugging
     return 1
   fi
   # Check if the generated file name actually matches the expected safe name convention from npm>=7
@@ -176,7 +216,7 @@ function pack_package {
   # Read the current version for the alias, defaulting to 0 if not found
   local current_version=$(jq -r --arg alias "$alias" '.[$alias].version // 0' "$DATA_FILE")
   local new_version=$((current_version + 1))
-  echo "--- Versioning: '$alias' -> $new_version ---"
+  log_message "info" "Versioning: Alias '${COLOR_CYAN}$alias${COLOR_RESET}' will be version ${COLOR_CYAN}$new_version${COLOR_RESET} (previous was $current_version)."
 
   # --- Clean up previous version ---
   if [ "$current_version" -gt 0 ]; then
@@ -185,18 +225,18 @@ function pack_package {
       local previous_tgz_path="$LOCALPACKS_DIR/$previous_tgz_filename"
       # Check if the previous version file exists and remove it
       if [ -f "$previous_tgz_path" ]; then
-          echo "--- Removing previous version: $previous_tgz_path ---"
+          log_message "info" "Removing previous version: ${COLOR_CYAN}$previous_tgz_path${COLOR_RESET}"
           if ! rm "$previous_tgz_path"; then
               # Log a warning but continue, as cleanup failure isn't critical
-              echo "Warning: Failed to remove previous version at $previous_tgz_path."
+              log_message "warning" "Failed to remove previous version at ${COLOR_CYAN}$previous_tgz_path${COLOR_RESET}."
           fi
       else
           # Inform user if no previous file was found
-          echo "--- No previous version file found for $alias (safe name $safe_package_name) version $current_version to remove. ---"
+          log_message "info" "No previous version file found for alias '$alias' (version $current_version) at expected path ${COLOR_CYAN}$previous_tgz_path${COLOR_RESET}."
       fi
   else
        # Inform user this is the first tracked version for the alias
-      echo "--- This is the first tracked version ($new_version), no previous version to remove. ---"
+      log_message "info" "This is the first tracked version ($new_version) for alias '$alias', no previous version to remove."
   fi
 
   # --- Move and rename the newly packed file ---
@@ -204,47 +244,52 @@ function pack_package {
   local new_tgz_filename="${safe_package_name}-${new_version}.tgz"
   local target_tgz_path="$LOCALPACKS_DIR/$new_tgz_filename"
 
-  echo "--- Moving '$packed_file_abs_path' to '$target_tgz_path'... ---"
+  log_message "info" "Moving generated package from '${COLOR_CYAN}$packed_file_abs_path${COLOR_RESET}' to final location '${COLOR_CYAN}$target_tgz_path${COLOR_RESET}'..."
   # The move command now uses the TARGET_TGZ_PATH which has the safe filename
   if ! mv "$packed_file_abs_path" "$target_tgz_path"; then
-    echo "Error: Failed to move the packed file."
+    log_message "error" "Failed to move the packed file."
     # Add more debugging info if move fails
-    echo "Source: $packed_file_abs_path"
-    echo "Target: $target_tgz_path"
-    echo "Source exists? $(ls -l "$packed_file_abs_path")"
-    echo "Target directory exists? $(ls -ld "$LOCALPACKS_DIR")"
+    log_message "info" "Source path: ${COLOR_CYAN}$packed_file_abs_path${COLOR_RESET}"
+    log_message "info" "Target path: ${COLOR_CYAN}$target_tgz_path${COLOR_RESET}"
+    log_message "info" "Source exists? $(ls -l "$packed_file_abs_path" 2>/dev/null || echo 'No')"
+    log_message "info" "Target directory exists? $(ls -ld "$LOCALPACKS_DIR" 2>/dev/null || echo 'No')"
     return 1
   fi
 
   # --- Update the data file with the new version info ---
   # IMPORTANT: Store the ORIGINAL package name in the JSON data
-  echo "--- Updating alias info in '$DATA_FILE' (using original name '$original_package_name')... ---"
+  log_message "info" "Updating alias information in '${COLOR_CYAN}$DATA_FILE${COLOR_RESET}' (Package: '${original_package_name}', Version: $new_version)..."
   if update_alias_info "$alias" "$original_package_name" "$new_version"; then
-      echo "--- Successfully packed and stored '$original_package_name' as '$alias' version $new_version ---"
-      echo "--- Saved to: $target_tgz_path (using safe name $safe_package_name) ---"
+      log_message "success" "Successfully packed '${COLOR_CYAN}$original_package_name${COLOR_RESET}' as alias '${COLOR_CYAN}$alias${COLOR_RESET}' version ${COLOR_CYAN}$new_version${COLOR_RESET}."
+      log_message "info"    "Package saved to: ${COLOR_CYAN}$target_tgz_path${COLOR_RESET}"
       return 0
   else
-      echo "Error: Failed to update $DATA_FILE."
+      log_message "error" "Failed to update alias information in ${COLOR_CYAN}$DATA_FILE${COLOR_RESET}."
       # Optional: Consider attempting to revert the move if the JSON update fails
+      # log_message "warning" "Attempting to revert file move..."
+      # mv "$target_tgz_path" "$packed_file_abs_path" || log_message "error" "Revert failed."
       return 1
   fi
 }
 
 function install_package {
-  local alias="$1"
+  local alias_input="$1" # Keep original input to check for prefix
 
-  if [ -z "$alias" ]; then
-    echo "Error: Alias is required for 'install' command."
+  if [ -z "$alias_input" ]; then
+    log_message "error" "Alias is required for the 'install' command."
     print_usage
     return 1
   fi
 
   # Detect '%' prefix to install as devDependency
   local install_flag=""
-  if [[ "$alias" =~ ^% ]]; then
+  local alias="$alias_input" # Use a separate variable for the actual alias name
+  if [[ "$alias_input" =~ ^% ]]; then
     install_flag="--save-dev"
-    alias="${alias:1}"
-    echo "--- Detected '%' prefix; installing as devDependency for alias '$alias' ---"
+    alias="${alias_input:1}" # Remove the prefix
+    log_message "info" "Detected '%' prefix. Will install alias '${COLOR_CYAN}$alias${COLOR_RESET}' as a devDependency."
+  else
+    log_message "info" "Preparing to install alias '${COLOR_CYAN}$alias${COLOR_RESET}' as a standard dependency."
   fi
 
   # Read the alias information from the data file
@@ -252,7 +297,7 @@ function install_package {
 
   # Check if alias exists in the data
   if [ "$alias_info" == "null" ] || [ -z "$alias_info" ]; then
-    echo "Error: Alias '$alias' not found in $DATA_FILE."
+    log_message "error" "Alias '${COLOR_CYAN}$alias${COLOR_RESET}' not found in the data file (${COLOR_CYAN}$DATA_FILE${COLOR_RESET})."
     return 1
   fi
 
@@ -262,68 +307,74 @@ function install_package {
 
   # Validate the extracted data
   if [ -z "$original_package_name" ] || [ "$original_package_name" == "null" ] || [ -z "$latest_version" ] || [ "$latest_version" == "null" ]; then
-     echo "Error: Incomplete data found for alias '$alias' in $DATA_FILE."
+     log_message "error" "Incomplete data found for alias '${COLOR_CYAN}$alias${COLOR_RESET}' in ${COLOR_CYAN}$DATA_FILE${COLOR_RESET}. Missing package name or version."
      return 1
   fi
 
   # Construct filesystem-safe name and packed filename
   local safe_package_name=${alias//\//-}
   local package_filename="${safe_package_name}-${latest_version}.tgz"
+  local package_path="$LOCALPACKS_DIR/$package_filename" # Full path to the tgz
 
   # If package.json references this packed file, skip installation
   if [ -f "package.json" ]; then
+    local search_string="file:${package_path#$HOME/}" # Relative path from home usually used by npm/yarn
+    local search_string_alt="file:$LOCALPACKS_DIR/$package_filename" # Absolute path might also be used
+
     if jq -e --arg filename "$package_filename" \
-         'any(.dependencies[]?; contains($filename)) or any(.devDependencies[]?; contains($filename))' \
-         package.json > /dev/null; then
-      echo "--- Dependency already references $filename in package.json; skipping npm install ---"
-      return 0
+             --arg filepath1 "$search_string" \
+             --arg filepath2 "$search_string_alt" \
+             'any(.dependencies, .devDependencies | objects | .[]?; contains($filename) or contains($filepath1) or contains($filepath2))' \
+             package.json > /dev/null; then
+        log_message "info" "Dependency '${COLOR_CYAN}$original_package_name${COLOR_RESET}' (alias '${alias}') seems already present in ${COLOR_CYAN}package.json${COLOR_RESET} pointing to a local file. Skipping 'npm install'."
+        return 0
     fi
   fi
 
-  # Construct the full path to the package .tgz file
-  local package_path="$LOCALPACKS_DIR/$package_filename"
-
   # Check if the .tgz file exists
   if [ ! -f "$package_path" ]; then
-    echo "Error: Package file for '$alias' (version $latest_version) not found."
-    echo "       Original name: $original_package_name"
-    echo "       Expected filename: $package_filename"
-    echo "       Expected path: $package_path"
+    log_message "error" "Package file for alias '${COLOR_CYAN}$alias${COLOR_RESET}' (version ${COLOR_CYAN}$latest_version${COLOR_RESET}) not found."
+    log_message "info"  "  Original package name: ${COLOR_CYAN}$original_package_name${COLOR_RESET}"
+    log_message "info"  "  Expected filename: ${COLOR_CYAN}$package_filename${COLOR_RESET}"
+    log_message "info"  "  Expected path: ${COLOR_CYAN}$package_path${COLOR_RESET}"
     return 1
   fi
 
   # Install the package using npm
-  echo "--- Installing '$original_package_name' version $latest_version from '$package_path' $install_flag... ---"
+  log_message "info" "Executing 'npm install ${install_flag:+$install_flag }${COLOR_CYAN}$package_path${COLOR_RESET}'..."
   if ! npm install $install_flag "$package_path"; then
-    echo "Error: 'npm install $install_flag $package_path' failed."
+    log_message "error" "'npm install ${install_flag:+$install_flag }${package_path}' command failed."
     return 1
   fi
-  echo "--- Successfully installed $alias (package '$original_package_name' version $latest_version) ${install_flag:+as devDependency} ---"
+  log_message "success" "Successfully installed alias '${COLOR_CYAN}$alias${COLOR_RESET}' (package '${COLOR_CYAN}$original_package_name${COLOR_RESET}' version ${COLOR_CYAN}$latest_version${COLOR_RESET})${install_flag:+ as devDependency}."
   return 0
 }
 
+
 function handle_config_pack {
   if [ -f "$CONFIG_FILE" ]; then
-    echo "--- Found $CONFIG_FILE. Attempting to pack using its configuration... ---"
+    log_message "info" "Found configuration file: ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET}. Attempting pack operation."
     local config=$(cat "$CONFIG_FILE")
     local alias=$(echo "$config" | jq -r '.alias')
-    local directory=$(echo "$config" | jq -r '.directory')
+    local directory=$(echo "$config" | jq -r '.directory') # Might be null
 
     if [ -n "$alias" ] && [ "$alias" != "null" ]; then
-      echo "--- Packing with alias: '$alias'"
+      log_message "info" "Packing using alias from config: '${COLOR_CYAN}$alias${COLOR_RESET}'"
       if [ -n "$directory" ] && [ "$directory" != "null" ]; then
-        echo "--- Using directory: '$directory'"
+        log_message "info" "Using directory from config: '${COLOR_CYAN}$directory${COLOR_RESET}'"
         pack_package "$alias" "$directory"
       else
-        pack_package "$alias"
+        log_message "info" "No directory specified in config, packing in current directory."
+        pack_package "$alias" # No directory argument passed
       fi
     else
-      echo "Warning: 'alias' not found or is null in $CONFIG_FILE. Ignoring."
+      log_message "warning" "'alias' key not found or is null in ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET}. Cannot proceed with packing based on config."
       print_usage
       return 1
     fi
   else
-    echo "Warning: $CONFIG_FILE not found. Please specify a command or create the configuration file."
+    # This case should ideally not be reached if called correctly from main logic
+    log_message "warning" "Configuration file ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET} not found. Cannot perform config-based pack."
     print_usage
     return 1
   fi
@@ -331,25 +382,40 @@ function handle_config_pack {
 
 function handle_config_install {
   if [ -f "$CONFIG_FILE" ]; then
-    echo "--- Found $CONFIG_FILE. Attempting to install using its configuration... ---"
+    log_message "info" "Found configuration file: ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET}. Attempting install operation."
     local config=$(cat "$CONFIG_FILE")
-    local packs_json=$(echo "$config" | jq -r '.packs')
-
-    if [ -n "$packs_json" ] && [ "$packs_json" != "null" ]; then
-      # Iterate through the array of packages using jq
-      while IFS= read -r alias; do
-        alias=$(echo "$alias" | tr -d '" ') # Clean up quotes and spaces
-        echo "--- Attempting to install: '$alias' ---"
-        install_package "$alias"
-      done <<< "$(echo "$config" | jq -r '.packs[]')"
-      echo "--- Installation process complete. ---"
-    else
-      echo "Warning: 'packs' key not found or is null in $CONFIG_FILE. Ignoring."
-      print_usage
-      return 1
+    # Ensure 'packs' exists and is an array
+    if ! echo "$config" | jq -e '.packs | type == "array"' > /dev/null; then
+        log_message "warning" "'packs' key is missing, null, or not an array in ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET}. Cannot proceed with installation based on config."
+        print_usage
+        return 1
     fi
+
+    # Check if the array is empty
+     if [ "$(echo "$config" | jq -r '.packs | length')" -eq 0 ]; then
+        log_message "info" "The 'packs' array in ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET} is empty. Nothing to install."
+        return 0
+     fi
+
+    log_message "info" "Installing packages listed in the 'packs' array..."
+    # Iterate through the array of packages using jq and process substitution
+    while IFS= read -r alias; do
+      # jq -r already removes quotes, need to trim whitespace potentially added by <<<
+      alias=$(echo "$alias" | xargs) # Trim leading/trailing whitespace
+      if [ -n "$alias" ]; then
+          log_message "info" "Attempting installation for alias: '${COLOR_CYAN}$alias${COLOR_RESET}'"
+          install_package "$alias"
+          # Optional: Add check for install_package return code
+      else
+          log_message "warning" "Skipping empty or invalid entry in 'packs' array."
+      fi
+    done < <(echo "$config" | jq -r '.packs[]') # Use process substitution for safer iteration
+
+    log_message "success" "Finished processing 'packs' array from configuration file."
+
   else
-    echo "Warning: $CONFIG_FILE not found. Please specify a command or create the configuration file."
+     # This case should ideally not be reached if called correctly from main logic
+    log_message "warning" "Configuration file ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET} not found. Cannot perform config-based installation."
     print_usage
     return 1
   fi
@@ -363,39 +429,44 @@ ensure_localpacks_setup
 
 # Parse arguments
 COMMAND=$1
-ALIAS=$2
-ARG3=$3 # Could be the directory for 'pack'
+ALIAS=$2  # Could be alias for pack/install
+ARG3=$3   # Could be directory for 'pack'
+
+# Default exit code
+exit_code=0
 
 if [ -z "$COMMAND" ]; then
   # No command provided, check for localpack.json
+  log_message "info" "No command specified, checking for ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET}..."
   if [ -f "$CONFIG_FILE" ]; then
-    config_type=$(jq -r 'if has("alias") then "pack" elif has("packs") then "install" else "unknown" end' "$CONFIG_FILE")
+    # Determine config type based on top-level keys 'alias' (pack) or 'packs' (install)
+    config_type=$(jq -r 'if has("alias") and .alias != null then "pack" elif has("packs") and (.packs | type == "array") then "install" else "unknown" end' "$CONFIG_FILE")
     case "$config_type" in
       "pack")
-        handle_config_pack
+        handle_config_pack || exit_code=$?
         ;;
       "install")
-        handle_config_install
+        handle_config_install || exit_code=$?
         ;;
       "unknown")
-        echo "Warning: $CONFIG_FILE found, but does not contain 'alias' or 'packs' configuration."
+        log_message "warning" "${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET} found, but does not contain a valid 'alias' (for packing) or 'packs' array (for installing)."
         print_usage
-        exit 1
+        exit_code=1
         ;;
     esac
   else
-    echo "Warning: No command specified and $CONFIG_FILE not found."
+    log_message "warning" "No command specified and ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET} not found."
     print_usage
-    exit 1
+    exit_code=1
   fi
 else
   case "$COMMAND" in
     pack)
-      pack_package "$ALIAS" "$ARG3"
+      pack_package "$ALIAS" "$ARG3" || exit_code=$?
       ;;
 
     i|install)
-      install_package "$ALIAS"
+      install_package "$ALIAS" || exit_code=$?
       ;;
 
     help|--help|-h)
@@ -405,11 +476,11 @@ else
 
     *)
       # Handle unknown commands
-      echo "Error: Unknown command '$COMMAND'."
+      log_message "error" "Unknown command '${COLOR_CYAN}$COMMAND${COLOR_RESET}'."
       print_usage
-      exit 1
+      exit_code=1
       ;;
   esac
 fi
 
-exit 0
+exit $exit_code
