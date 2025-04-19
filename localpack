@@ -49,7 +49,7 @@ function log_message {
 function print_usage {
   # Usage message should remain plain echo for standard output conventions
   echo "Usage:"
-  echo "  localpack [pack <alias> [directory]|i|install <alias>|discover [root_directory]|help]"
+  echo "  localpack [pack <alias> [directory]|i|install <alias>|discover [-i] [root_directory]|help]"
   echo "  localpack                            - Uses localpack.json to pack or install."
   echo "  localpack pack <alias> [directory]   - Builds, packs, versions, and stores the package."
   echo "                                         If [directory] is provided, 'npm pack' runs inside it."
@@ -57,8 +57,9 @@ function print_usage {
   echo "                                         Removes the previous .tgz for this alias."
   echo "  localpack i|install <alias>          - Installs the latest version of the package associated with <alias>."
   echo "                                         Prefix alias with '%' to install as devDependency (e.g., localpack install %my-dev-tool)."
-  echo "  localpack discover [root_directory]  - Recursively searches for .localpack.json files with pack configurations,"
+  echo "  localpack discover [-i] [root_directory] - Recursively searches for .localpack.json files with pack configurations,"
   echo "                                         lists all found aliases, and asks for confirmation before packing."
+  echo "                                         With -i flag, runs 'npm install' in each directory before packing."
   echo "  localpack help                       - Shows this help message."
 }
 
@@ -413,6 +414,7 @@ function handle_config_install {
 
 function discover_and_pack {
     local root_dir="${1:-.}" # Use current directory if no directory specified
+    local do_install=${2:-false} # Default to false if not specified
 
     if [ ! -d "$root_dir" ]; then
         log_message "error" "Directory '${COLOR_CYAN}$root_dir${COLOR_RESET}' does not exist."
@@ -492,6 +494,13 @@ function discover_and_pack {
                     continue
                 fi
 
+                if [ "$do_install" = true ]; then
+                    log_message "info" "Running 'npm install' in '${COLOR_CYAN}${pack_dirs[$i]}${COLOR_RESET}'..."
+                    npm install || {
+                        log_message "warning" "npm install failed in '${COLOR_CYAN}${pack_dirs[$i]}${COLOR_RESET}'. Proceeding with pack operation anyway."
+                    }
+                fi
+
                 # Run pack operation based on the config
                 handle_config_pack
             done
@@ -561,7 +570,26 @@ else
       ;;
 
     discover)
-      discover_and_pack "$ALIAS" || exit_code=$?
+      do_install=false
+      root_dir="."
+
+      # Sprawdź argumenty
+      if [ "$ALIAS" = "-i" ]; then
+          do_install=true
+          # Jeśli jest trzeci argument, traktuj go jako katalog
+          if [ -n "$ARG3" ]; then
+              root_dir="$ARG3"
+          fi
+      elif [ -n "$ALIAS" ]; then
+          # Pierwszy argument to katalog
+          root_dir="$ALIAS"
+          # Sprawdź czy drugi argument to flaga -i
+          if [ "$ARG3" = "-i" ]; then
+              do_install=true
+          fi
+      fi
+
+      discover_and_pack "$root_dir" "$do_install" || exit_code=$?
       ;;
 
     help|--help|-h)
