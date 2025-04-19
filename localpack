@@ -148,11 +148,10 @@ function pack_package {
       log_message "error" "Could not read package name from '${COLOR_CYAN}$package_json_path${COLOR_RESET}'."
       return 1
   fi
-  # Create a filesystem-safe version of the package name
+  # Create a filesystem-safe version of the alias name for the filename
   local safe_package_name=${alias//\//-}
-  log_message "info" "Original package name: ${COLOR_CYAN}$original_package_name${COLOR_RESET}"
-  log_message "info" "Filesystem-safe name for alias '$alias': ${COLOR_CYAN}$safe_package_name${COLOR_RESET}"
-
+  # Condensed log for package identification
+  log_message "info" "Processing package '${COLOR_CYAN}${original_package_name}${COLOR_RESET}' for alias '${COLOR_CYAN}${alias}${COLOR_RESET}' (Safe filename prefix: ${COLOR_CYAN}${safe_package_name}${COLOR_RESET})"
 
   # Build the package
   log_message "info" "Executing 'npm run build'..."
@@ -183,9 +182,8 @@ function pack_package {
     fi
   fi
 
-  # Pack the package and capture the filename (last line of npm pack output)
+  # Pack the package and capture the filename
   log_message "info" "Executing 'npm pack' in '${COLOR_CYAN}$PWD${COLOR_RESET}'..."
-  # Note: npm pack might create a filename based on ORIGINAL_PACKAGE_NAME
   local packed_filename_relative=$(npm pack | tail -n 1)
   local npm_pack_exit_code=$?
 
@@ -197,7 +195,6 @@ function pack_package {
     log_message "info" "Returning to original directory '${COLOR_CYAN}$original_pwd${COLOR_RESET}'..."
     if ! cd "$original_pwd"; then
         log_message "warning" "Failed to return to the original directory '${COLOR_CYAN}$original_pwd${COLOR_RESET}'. Proceeding with packed file operations."
-        # Try to continue anyway, as the file is already packed
     fi
   fi
 
@@ -209,65 +206,52 @@ function pack_package {
     ls -la "$(dirname "$packed_file_abs_path")" # List directory contents for debugging
     return 1
   fi
-  # Check if the generated file name actually matches the expected safe name convention from npm>=7
-  # Example: npm pack might generate '@org-pkg-1.0.0.tgz' or 'org-pkg-1.0.0.tgz'
-  # We will rename it consistently using our SAFE_PACKAGE_NAME later.
 
   # Read the current version for the alias, defaulting to 0 if not found
   local current_version=$(jq -r --arg alias "$alias" '.[$alias].version // 0' "$DATA_FILE")
   local new_version=$((current_version + 1))
-  log_message "info" "Versioning: Alias '${COLOR_CYAN}$alias${COLOR_RESET}' will be version ${COLOR_CYAN}$new_version${COLOR_RESET} (previous was $current_version)."
+  # Versioning info logged before update below
 
   # --- Clean up previous version ---
   if [ "$current_version" -gt 0 ]; then
-      # Construct the filename of the previous version using the SAFE name
       local previous_tgz_filename="${safe_package_name}-${current_version}.tgz"
       local previous_tgz_path="$LOCALPACKS_DIR/$previous_tgz_filename"
-      # Check if the previous version file exists and remove it
       if [ -f "$previous_tgz_path" ]; then
           log_message "info" "Removing previous version: ${COLOR_CYAN}$previous_tgz_path${COLOR_RESET}"
           if ! rm "$previous_tgz_path"; then
-              # Log a warning but continue, as cleanup failure isn't critical
               log_message "warning" "Failed to remove previous version at ${COLOR_CYAN}$previous_tgz_path${COLOR_RESET}."
           fi
       else
-          # Inform user if no previous file was found
           log_message "info" "No previous version file found for alias '$alias' (version $current_version) at expected path ${COLOR_CYAN}$previous_tgz_path${COLOR_RESET}."
       fi
   else
-       # Inform user this is the first tracked version for the alias
       log_message "info" "This is the first tracked version ($new_version) for alias '$alias', no previous version to remove."
   fi
 
   # --- Move and rename the newly packed file ---
-  # Construct the NEW filename using the SAFE name
   local new_tgz_filename="${safe_package_name}-${new_version}.tgz"
   local target_tgz_path="$LOCALPACKS_DIR/$new_tgz_filename"
 
-  log_message "info" "Moving generated package from '${COLOR_CYAN}$packed_file_abs_path${COLOR_RESET}' to final location '${COLOR_CYAN}$target_tgz_path${COLOR_RESET}'..."
-  # The move command now uses the TARGET_TGZ_PATH which has the safe filename
+  # Move log condensed into success message later, only log error here
   if ! mv "$packed_file_abs_path" "$target_tgz_path"; then
-    log_message "error" "Failed to move the packed file."
-    # Add more debugging info if move fails
-    log_message "info" "Source path: ${COLOR_CYAN}$packed_file_abs_path${COLOR_RESET}"
-    log_message "info" "Target path: ${COLOR_CYAN}$target_tgz_path${COLOR_RESET}"
+    log_message "error" "Failed to move the packed file from '${COLOR_CYAN}$packed_file_abs_path${COLOR_RESET}' to '${COLOR_CYAN}$target_tgz_path${COLOR_RESET}'."
     log_message "info" "Source exists? $(ls -l "$packed_file_abs_path" 2>/dev/null || echo 'No')"
     log_message "info" "Target directory exists? $(ls -ld "$LOCALPACKS_DIR" 2>/dev/null || echo 'No')"
     return 1
   fi
+  # Log move confirmation implicitly via the final success message
 
   # --- Update the data file with the new version info ---
-  # IMPORTANT: Store the ORIGINAL package name in the JSON data
-  log_message "info" "Updating alias information in '${COLOR_CYAN}$DATA_FILE${COLOR_RESET}' (Package: '${original_package_name}', Version: $new_version)..."
+  # Condensed log for versioning and update action
+  log_message "info" "Updating alias '${COLOR_CYAN}${alias}${COLOR_RESET}' to version ${COLOR_CYAN}${new_version}${COLOR_RESET} in ${COLOR_CYAN}$DATA_FILE${COLOR_RESET} (Package: '${original_package_name}')."
   if update_alias_info "$alias" "$original_package_name" "$new_version"; then
-      log_message "success" "Successfully packed '${COLOR_CYAN}$original_package_name${COLOR_RESET}' as alias '${COLOR_CYAN}$alias${COLOR_RESET}' version ${COLOR_CYAN}$new_version${COLOR_RESET}."
-      log_message "info"    "Package saved to: ${COLOR_CYAN}$target_tgz_path${COLOR_RESET}"
+      # Condensed success message including move confirmation
+      log_message "success" "Successfully packed alias '${COLOR_CYAN}$alias${COLOR_RESET}' (v${COLOR_CYAN}$new_version${COLOR_RESET}) for package '${COLOR_CYAN}$original_package_name${COLOR_RESET}'."
+      log_message "info"    "Stored at: ${COLOR_CYAN}$target_tgz_path${COLOR_RESET}"
       return 0
   else
       log_message "error" "Failed to update alias information in ${COLOR_CYAN}$DATA_FILE${COLOR_RESET}."
       # Optional: Consider attempting to revert the move if the JSON update fails
-      # log_message "warning" "Attempting to revert file move..."
-      # mv "$target_tgz_path" "$packed_file_abs_path" || log_message "error" "Revert failed."
       return 1
   fi
 }
@@ -281,15 +265,14 @@ function install_package {
     return 1
   fi
 
-  # Detect '%' prefix to install as devDependency
+  # Determine dependency type and clean alias name early
   local install_flag=""
   local alias="$alias_input" # Use a separate variable for the actual alias name
+  local dep_type_string="standard dependency" # Default type description
   if [[ "$alias_input" =~ ^% ]]; then
     install_flag="--save-dev"
     alias="${alias_input:1}" # Remove the prefix
-    log_message "info" "Detected '%' prefix. Will install alias '${COLOR_CYAN}$alias${COLOR_RESET}' as a devDependency."
-  else
-    log_message "info" "Preparing to install alias '${COLOR_CYAN}$alias${COLOR_RESET}' as a standard dependency."
+    dep_type_string="devDependency" # Set type description for logs
   fi
 
   # Read the alias information from the data file
@@ -311,27 +294,31 @@ function install_package {
      return 1
   fi
 
-  # Construct filesystem-safe name and packed filename
+  # Construct filesystem-safe name and paths
   local safe_package_name=${alias//\//-}
   local package_filename="${safe_package_name}-${latest_version}.tgz"
   local package_path="$LOCALPACKS_DIR/$package_filename" # Full path to the tgz
 
-  # If package.json references this packed file, skip installation
+  # Check if package.json already references this packed file BEFORE checking existence or logging install intent
   if [ -f "package.json" ]; then
-    local search_string="file:${package_path#$HOME/}" # Relative path from home usually used by npm/yarn
-    local search_string_alt="file:$LOCALPACKS_DIR/$package_filename" # Absolute path might also be used
+    # Construct potential paths used in package.json (npm often uses relative from $HOME)
+    local search_string_rel_home="file:${package_path#$HOME/}"
+    local search_string_abs="file:$package_path"
+    local search_string_direct_filename="$package_filename" # Sometimes just the filename is used with file: prefix implicitly handled
 
+    # Updated jq query to check dependencies and devDependencies more robustly
     if jq -e --arg filename "$package_filename" \
-             --arg filepath1 "$search_string" \
-             --arg filepath2 "$search_string_alt" \
-             'any(.dependencies, .devDependencies | objects | .[]?; contains($filename) or contains($filepath1) or contains($filepath2))' \
+             --arg filepath_rel_home "$search_string_rel_home" \
+             --arg filepath_abs "$search_string_abs" \
+             '(.dependencies // {}) + (.devDependencies // {}) | to_entries | map(.value) | any(. == $filepath_rel_home or . == $filepath_abs or contains($filename))' \
              package.json > /dev/null; then
-        log_message "info" "Dependency '${COLOR_CYAN}$original_package_name${COLOR_RESET}' (alias '${alias}') seems already present in ${COLOR_CYAN}package.json${COLOR_RESET} pointing to a local file. Skipping 'npm install'."
+        # Condensed skip message
+        log_message "info" "Alias '${COLOR_CYAN}${alias}${COLOR_RESET}' (${COLOR_CYAN}${original_package_name}${COLOR_RESET}) already listed as ${COLOR_YELLOW}${dep_type_string}${COLOR_RESET} in ${COLOR_CYAN}package.json${COLOR_RESET}. Skipping installation."
         return 0
     fi
   fi
 
-  # Check if the .tgz file exists
+  # Check if the .tgz file exists only if we are not skipping
   if [ ! -f "$package_path" ]; then
     log_message "error" "Package file for alias '${COLOR_CYAN}$alias${COLOR_RESET}' (version ${COLOR_CYAN}$latest_version${COLOR_RESET}) not found."
     log_message "info"  "  Original package name: ${COLOR_CYAN}$original_package_name${COLOR_RESET}"
@@ -340,13 +327,15 @@ function install_package {
     return 1
   fi
 
-  # Install the package using npm
-  log_message "info" "Executing 'npm install ${install_flag:+$install_flag }${COLOR_CYAN}$package_path${COLOR_RESET}'..."
+  # Condensed install message
+  log_message "info" "Installing alias '${COLOR_CYAN}$alias${COLOR_RESET}' (${COLOR_CYAN}$original_package_name${COLOR_RESET} v${COLOR_CYAN}$latest_version${COLOR_RESET}) as ${COLOR_YELLOW}$dep_type_string${COLOR_RESET} from '${COLOR_CYAN}$package_path${COLOR_RESET}'..."
   if ! npm install $install_flag "$package_path"; then
     log_message "error" "'npm install ${install_flag:+$install_flag }${package_path}' command failed."
     return 1
   fi
-  log_message "success" "Successfully installed alias '${COLOR_CYAN}$alias${COLOR_RESET}' (package '${COLOR_CYAN}$original_package_name${COLOR_RESET}' version ${COLOR_CYAN}$latest_version${COLOR_RESET})${install_flag:+ as devDependency}."
+
+  # Condensed success message
+  log_message "success" "Successfully installed alias '${COLOR_CYAN}$alias${COLOR_RESET}' (${COLOR_CYAN}$original_package_name${COLOR_RESET} v${COLOR_CYAN}$latest_version${COLOR_RESET}) as ${COLOR_YELLOW}$dep_type_string${COLOR_RESET}."
   return 0
 }
 
@@ -397,15 +386,14 @@ function handle_config_install {
         return 0
      fi
 
-    log_message "info" "Installing packages listed in the 'packs' array..."
     # Iterate through the array of packages using jq and process substitution
-    while IFS= read -r alias; do
+    while IFS= read -r alias_entry; do
       # jq -r already removes quotes, need to trim whitespace potentially added by <<<
-      alias=$(echo "$alias" | xargs) # Trim leading/trailing whitespace
-      if [ -n "$alias" ]; then
-          log_message "info" "Attempting installation for alias: '${COLOR_CYAN}$alias${COLOR_RESET}'"
-          install_package "$alias"
-          # Optional: Add check for install_package return code
+      alias_entry=$(echo "$alias_entry" | xargs) # Trim leading/trailing whitespace
+      if [ -n "$alias_entry" ]; then
+          # install_package logs its own intent/status now
+          install_package "$alias_entry"
+          # We don't track individual results here for now, just proceed
       else
           log_message "warning" "Skipping empty or invalid entry in 'packs' array."
       fi
@@ -420,6 +408,7 @@ function handle_config_install {
     return 1
   fi
 }
+
 
 # --- Main Script Logic ---
 
