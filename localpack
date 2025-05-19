@@ -569,21 +569,30 @@ if [ -z "$COMMAND" ]; then
   # No command provided, check for localpack.json
   log_message "info" "No command specified, checking for ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET}..."
   if [ -f "$CONFIG_FILE" ]; then
-    # Determine config type based on top-level keys 'alias' (pack) or 'packs' (install)
-    config_type=$(jq -r 'if has("alias") and .alias != null then "pack" elif has("packs") and (.packs | type == "array") then "install" else "unknown" end' "$CONFIG_FILE")
-    case "$config_type" in
-      "pack")
-        handle_config_pack || exit_code=$?
-        ;;
-      "install")
-        handle_config_install || exit_code=$?
-        ;;
-      "unknown")
-        log_message "warning" "${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET} found, but does not contain a valid 'alias' (for packing) or 'packs' array (for installing)."
-        print_usage
-        exit_code=1
-        ;;
-    esac
+    # Check for 'packs' (install) and 'alias' (pack) keys
+    # Execute install first if it exists, then pack if it exists
+    has_alias=$(jq -r 'has("alias") and .alias != null' "$CONFIG_FILE")
+    has_packs=$(jq -r 'has("packs") and (.packs | type == "array")' "$CONFIG_FILE")
+    command_executed=false
+
+    # First check for install
+    if [ "$has_packs" = "true" ]; then
+      handle_config_install || exit_code=$?
+      command_executed=true
+    fi
+
+    # Then check for pack
+    if [ "$has_alias" = "true" ]; then
+      handle_config_pack || exit_code=$?
+      command_executed=true
+    fi
+
+    # Show warning if no command was executed
+    if [ "$command_executed" = false ]; then
+      log_message "warning" "${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET} found, but does not contain a valid 'alias' (for packing) or 'packs' array (for installing)."
+      print_usage
+      exit_code=1
+    fi
   else
     log_message "warning" "No command specified and ${COLOR_CYAN}$CONFIG_FILE${COLOR_RESET} not found."
     print_usage
