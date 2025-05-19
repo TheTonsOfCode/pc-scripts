@@ -337,6 +337,36 @@ function install_package {
     return 1
   fi
 
+  # Update package.json to set the correct file path for the installed package
+  if [ -f "package.json" ]; then
+    log_message "info" "Updating package.json to set the correct file path for '${COLOR_CYAN}$original_package_name${COLOR_RESET}'..."
+
+    # Determine which section to update based on dependency type
+    local dep_section="dependencies"
+    if [[ -n "$install_flag" && "$install_flag" == "--save-dev" ]]; then
+      dep_section="devDependencies"
+    fi
+
+    # Create the file path to use in package.json (using tilde for home directory)
+    local file_path="file:~/.localpacks/${package_filename}"
+
+    # Update package.json using jq
+    local updated_package_json
+    updated_package_json=$(jq --arg pkg "$original_package_name" \
+                             --arg path "$file_path" \
+                             --arg section "$dep_section" \
+                             'if has($section) then .[($section)][$pkg] = $path else . += {($section): {($pkg): $path}} end' \
+                             package.json)
+
+    # Write the updated package.json back to disk
+    if [ $? -eq 0 ]; then
+      echo "$updated_package_json" > package.json
+      log_message "success" "Successfully updated ${COLOR_YELLOW}$dep_section${COLOR_RESET} in package.json with path: ${COLOR_CYAN}$file_path${COLOR_RESET}"
+    else
+      log_message "warning" "Failed to update package.json. The package is installed but the file path may not be correct."
+    fi
+  fi
+
   # Condensed success message
   log_message "success" "Successfully installed alias '${COLOR_CYAN}$alias${COLOR_RESET}' (${COLOR_CYAN}$original_package_name${COLOR_RESET} v${COLOR_CYAN}$latest_version${COLOR_RESET}) as ${COLOR_YELLOW}$dep_type_string${COLOR_RESET}."
   return 0
