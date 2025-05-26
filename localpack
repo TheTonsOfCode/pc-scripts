@@ -129,14 +129,22 @@ function update_alias_info {
 }
 
 function pack_package {
-  local alias="$1"
+  local alias_input="$1"
   local directory="$2"
 
-  if [ -z "$alias" ]; then
+  if [ -z "$alias_input" ]; then
     log_message "error" "Alias is required for the 'pack' command."
     print_usage
     return 1
   fi
+
+  # Check if the package should be ignored (starts with !)
+  if [[ "$alias_input" =~ ^! ]]; then
+    log_message "info" "Alias '${COLOR_CYAN}${alias_input:1}${COLOR_RESET}' is marked with '!' prefix. Ignoring packing."
+    return 0
+  fi
+
+  local alias="$alias_input" # Use a separate variable for the actual alias name
 
   local package_json_path="package.json"
 
@@ -266,6 +274,12 @@ function install_package {
     log_message "error" "Alias is required for the 'install' command."
     print_usage
     return 1
+  fi
+
+  # Check if the package should be ignored (starts with !)
+  if [[ "$alias_input" =~ ^! ]]; then
+    log_message "info" "Alias '${COLOR_CYAN}${alias_input:1}${COLOR_RESET}' is marked with '!' prefix. Ignoring installation."
+    return 0
   fi
 
   # Determine dependency type and clean alias name early
