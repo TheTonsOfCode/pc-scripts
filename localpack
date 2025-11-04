@@ -23,23 +23,26 @@ function log_message {
     local level="$1"
     local message="$2"
     local prefix="${COLOR_BLUE}📦 localpack:${COLOR_RESET}"
+    local timestamp
+    timestamp=$(date +"%H:%M:%S")
+    local time_prefix="[$timestamp]"
 
     case "$level" in
         info)
-            echo -e "${prefix} ${message}"
+            echo -e "${time_prefix} ${prefix} ${message}"
             ;;
         success)
-            echo -e "${prefix} ${COLOR_GREEN}✔ ${message}${COLOR_RESET}"
+            echo -e "${time_prefix} ${prefix} ${COLOR_GREEN}✔ ${message}${COLOR_RESET}"
             ;;
         warning)
-            echo -e "${prefix} ${COLOR_YELLOW}⚠ ${message}${COLOR_RESET}"
+            echo -e "${time_prefix} ${prefix} ${COLOR_YELLOW}⚠ ${message}${COLOR_RESET}"
             ;;
         error)
-            echo -e "${prefix} ${COLOR_RED}✖ ${message}${COLOR_RESET}"
+            echo -e "${time_prefix} ${prefix} ${COLOR_RED}✖ ${message}${COLOR_RESET}"
             ;;
         *)
             # Default to info if level is unknown or omitted
-             echo -e "${prefix} ${message}"
+             echo -e "${time_prefix} ${prefix} ${message}"
              ;;
     esac
 }
