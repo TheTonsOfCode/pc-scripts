@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+TARGET_USER="${1:-Toolkit3D}"
+TARGET_ROOT="${2:-/Users/Toolkit3D/dev}"
+
+if ! command -v lsof >/dev/null 2>&1; then
+    echo "Brak polecenia 'lsof' w PATH."
+    exit 1
+fi
+
+TMP_FILE="$(mktemp)"
+trap 'rm -f "$TMP_FILE"' EXIT
+
+# PIDs, ktorych nie wolno zabic (skrypt + jego rodzice)
+printf "%s\n" "$$" >"$TMP_FILE.exclude"
+current_parent="${PPID}"
+while [[ -n "${current_parent}" && "${current_parent}" -gt 1 ]]; do
+    printf "%s\n" "${current_parent}" >>"$TMP_FILE.exclude"
+    next_parent="$(ps -o ppid= -p "${current_parent}" 2>/dev/null | tr -d '[:space:]')"
+    [[ -z "${next_parent}" ]] && break
+    current_parent="${next_parent}"
+done
+
+current_pid=""
+current_cmd=""
+current_cwd=""
+
+add_candidate() {
+    local pid="$1"
+    local cmd="$2"
+    local cwd="$3"
+
+    [[ -z "${pid}" || -z "${cwd}" ]] && return 0
+    [[ "${cwd}" != "${TARGET_ROOT}"* ]] && return 0
+    grep -qx "${pid}" "$TMP_FILE.exclude" && return 0
+
+    # deduplikacja PID
+    if ! awk -v pid="$pid" '$1==pid {found=1} END {exit found?0:1}' "$TMP_FILE" 2>/dev/null; then
+        printf "%s\t%s\t%s\n" "$pid" "${cmd:-unknown}" "$cwd" >>"$TMP_FILE"
+    fi
+}
+
+while IFS= read -r line; do
+    case "${line:0:1}" in
+    p)
+        add_candidate "${current_pid}" "${current_cmd}" "${current_cwd}"
+        current_pid="${line:1}"
+        current_cmd=""
+        current_cwd=""
+        ;;
+    c)
+        current_cmd="${line:1}"
+        ;;
+    n)
+        current_cwd="${line:1}"
+        ;;
+    esac
+done < <(lsof -w -n -u "${TARGET_USER}" -a -d cwd -Fpcn 2>/dev/null)
+
+add_candidate "${current_pid}" "${current_cmd}" "${current_cwd}"
+
+if [[ ! -s "$TMP_FILE" ]]; then
+    echo "Brak procesow usera '${TARGET_USER}' z cwd pod '${TARGET_ROOT}'."
+    rm -f "$TMP_FILE.exclude"
+    exit 0
+fi
+
+echo "Znalezione procesy do ewentualnego ubicia:"
+printf "%-8s %-8s %-20s %s\n" "PID" "PPID" "COMMAND" "CWD"
+
+sort -n "$TMP_FILE" >"$TMP_FILE.sorted"
+while IFS=$'\t' read -r pid cmd cwd; do
+    ppid="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true)"
+    printf "%-8s %-8s %-20s %s\n" "${pid}" "${ppid:-?}" "${cmd}" "${cwd}"
+done <"$TMP_FILE.sorted"
+
+read -r -p "Ubic te procesy? [y/N]: " answer
+case "${answer}" in
+    y|Y|yes|YES)
+        echo "Wysylam SIGTERM..."
+        while IFS=$'\t' read -r pid _ _; do
+            kill "${pid}" 2>/dev/null || true
+        done <"$TMP_FILE.sorted"
+
+        sleep 1
+        force_kill=0
+        while IFS=$'\t' read -r pid _ _; do
+            if ps -p "${pid}" >/dev/null 2>&1; then
+                if [[ "$force_kill" -eq 0 ]]; then
+                    echo "Niektore procesy zyja dalej, wysylam SIGKILL..."
+                    force_kill=1
+                fi
+                kill -9 "${pid}" 2>/dev/null || true
+            fi
+        done <"$TMP_FILE.sorted"
+
+        echo "Gotowe."
+        ;;
+    *)
+        echo "Anulowano, nic nie zostalo ubite."
+        ;;
+esac
+
+rm -f "$TMP_FILE.exclude" "$TMP_FILE.sorted"
