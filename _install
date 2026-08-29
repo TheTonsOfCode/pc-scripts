@@ -8,3 +8,5 @@ chmod +x ./clean-js
 sudo cp ./clean-js /usr/local/bin/clean-js
 chmod +x ./stop-work
 sudo cp ./stop-work /usr/local/bin/stop-work
+chmod +x ./orgup
+sudo cp ./orgup /usr/local/bin/orgup

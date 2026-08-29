@@ -1,0 +1,325 @@
+#!/usr/bin/env bash
+
+# --- Configuration ---
+ORGUP_DIR="$HOME/.orgup"
+ALIASES_FILE="$ORGUP_DIR/aliases.json"
+
+# --- Color Definitions ---
+COLOR_RESET='\033[0m'
+COLOR_RED='\033[0;31m'
+COLOR_GREEN='\033[0;32m'
+COLOR_YELLOW='\033[0;33m'
+COLOR_BLUE='\033[0;34m'
+COLOR_CYAN='\033[0;36m'
+COLOR_DIM='\033[2m'
+
+# --- Logging ---
+function log_message {
+  local level="$1"
+  local message="$2"
+  local prefix="${COLOR_BLUE}orgup:${COLOR_RESET}"
+
+  case "$level" in
+    success) echo -e "${prefix} ${COLOR_GREEN}✔ ${message}${COLOR_RESET}" ;;
+    warning) echo -e "${prefix} ${COLOR_YELLOW}⚠ ${message}${COLOR_RESET}" ;;
+    error)   echo -e "${prefix} ${COLOR_RED}✖ ${message}${COLOR_RESET}" ;;
+    *)       echo -e "${prefix} ${message}" ;;
+  esac
+}
+
+function print_usage {
+  cat <<EOF
+Usage:
+  orgup -a <alias> <prefix>   Add alias (e.g. orgup -a foo @acme-org)
+  orgup -l                    List aliases
+  orgup -d <alias>            Delete alias
+  orgup <alias>               Bump packages matching alias prefix
+  orgup help                  Show this help
+
+Bump reads package.json in the current directory, finds packages whose names
+start with the alias prefix in dependencies / devDependencies / peerDependencies,
+fetches latest versions from npm, shows a diff, and on Y updates + npm install.
+Range operators in peerDependencies (e.g. >=1.20.3) are preserved.
+EOF
+}
+
+function ensure_jq {
+  if ! command -v jq &>/dev/null; then
+    log_message "error" "'jq' not found. Install with: brew install jq"
+    exit 1
+  fi
+}
+
+function ensure_setup {
+  if ! mkdir -p "$ORGUP_DIR" 2>/dev/null; then
+    log_message "error" "Cannot create ${ORGUP_DIR}"
+    exit 1
+  fi
+  if [ ! -f "$ALIASES_FILE" ]; then
+    echo "{}" >"$ALIASES_FILE"
+  fi
+}
+
+function read_aliases {
+  jq '.' "$ALIASES_FILE"
+}
+
+function write_aliases {
+  local json_content="$1"
+  local tmp_file
+  tmp_file=$(mktemp)
+  if echo "$json_content" | jq '.' >"$tmp_file"; then
+    mv "$tmp_file" "$ALIASES_FILE"
+  else
+    rm -f "$tmp_file"
+    log_message "error" "Failed to write aliases (invalid JSON)"
+    exit 1
+  fi
+}
+
+function add_alias {
+  local alias_name="$1"
+  local prefix="$2"
+
+  if [ -z "$alias_name" ] || [ -z "$prefix" ]; then
+    log_message "error" "Usage: orgup -a <alias> <prefix>"
+    exit 1
+  fi
+
+  local data
+  data=$(read_aliases)
+  data=$(echo "$data" | jq --arg a "$alias_name" --arg p "$prefix" '.[$a] = $p')
+  write_aliases "$data"
+  log_message "success" "Alias ${COLOR_CYAN}${alias_name}${COLOR_RESET} → ${COLOR_CYAN}${prefix}${COLOR_RESET}"
+}
+
+function list_aliases {
+  local data
+  data=$(read_aliases)
+  local count
+  count=$(echo "$data" | jq 'length')
+
+  if [ "$count" -eq 0 ]; then
+    log_message "info" "No aliases yet. Add with: orgup -a <alias> <prefix>"
+    return
+  fi
+
+  echo -e "${COLOR_BLUE}orgup aliases:${COLOR_RESET}"
+  echo "$data" | jq -r 'to_entries | sort_by(.key)[] | "  \(.key)  →  \(.value)"'
+}
+
+function delete_alias {
+  local alias_name="$1"
+
+  if [ -z "$alias_name" ]; then
+    log_message "error" "Usage: orgup -d <alias>"
+    exit 1
+  fi
+
+  local data
+  data=$(read_aliases)
+
+  if ! echo "$data" | jq -e --arg a "$alias_name" 'has($a)' >/dev/null; then
+    log_message "error" "Alias '${alias_name}' not found"
+    exit 1
+  fi
+
+  data=$(echo "$data" | jq --arg a "$alias_name" 'del(.[$a])')
+  write_aliases "$data"
+  log_message "success" "Deleted alias ${COLOR_CYAN}${alias_name}${COLOR_RESET}"
+}
+
+# Split version spec into operator + bare version.
+# ">=1.20.3" → ">=|1.20.3"   "^1.2.3" → "^|1.2.3"   "1.2.3" → "|1.2.3"
+function split_version_spec {
+  local spec="$1"
+  if [[ "$spec" =~ ^(>=|<=|>|<|~|\^|=)(.+)$ ]]; then
+    printf '%s|%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  else
+    printf '|%s' "$spec"
+  fi
+}
+
+function resolve_prefix {
+  local alias_name="$1"
+  local data
+  data=$(read_aliases)
+
+  if ! echo "$data" | jq -e --arg a "$alias_name" 'has($a)' >/dev/null; then
+    log_message "error" "Alias '${alias_name}' not found. List with: orgup -l"
+    exit 1
+  fi
+
+  echo "$data" | jq -r --arg a "$alias_name" '.[$a]'
+}
+
+function bump_alias {
+  local alias_name="$1"
+  local prefix
+  prefix=$(resolve_prefix "$alias_name")
+
+  if [ ! -f "package.json" ]; then
+    log_message "error" "No package.json in current directory"
+    exit 1
+  fi
+
+  if ! command -v npm &>/dev/null; then
+    log_message "error" "npm not found"
+    exit 1
+  fi
+
+  local pkg_json
+  pkg_json=$(cat package.json)
+
+  # Collect matching entries as TSV: section\tname\tspec
+  # Match name == prefix OR name starts with "prefix/"
+  local matches
+  matches=$(echo "$pkg_json" | jq -r --arg p "$prefix" '
+    ["dependencies", "devDependencies", "peerDependencies"] as $sections
+    | $sections[] as $s
+    | (.[$s] // {})
+    | to_entries[]
+    | select(.key == $p or (.key | startswith($p + "/")))
+    | [$s, .key, .value]
+    | @tsv
+  ')
+
+  if [ -z "$matches" ]; then
+    log_message "warning" "No packages matching prefix ${COLOR_CYAN}${prefix}${COLOR_RESET} in package.json"
+    exit 0
+  fi
+
+  # Unique package names
+  local package_names
+  package_names=$(echo "$matches" | cut -f2 | sort -u)
+
+  local pkg_count
+  pkg_count=$(echo "$package_names" | grep -c . || true)
+  log_message "info" "Prefix ${COLOR_CYAN}${prefix}${COLOR_RESET} — checking ${pkg_count} package(s)..."
+
+  # Fetch latest versions → file: name\tlatest
+  local versions_file
+  versions_file=$(mktemp)
+  local fetch_ok=0
+
+  while IFS= read -r pkg_name; do
+    [ -z "$pkg_name" ] && continue
+    local latest
+    if latest=$(npm view "$pkg_name" version 2>/dev/null); then
+      printf '%s\t%s\n' "$pkg_name" "$latest" >>"$versions_file"
+      fetch_ok=1
+    else
+      log_message "error" "Could not fetch latest version for ${pkg_name}"
+    fi
+  done <<<"$package_names"
+
+  if [ "$fetch_ok" -eq 0 ]; then
+    rm -f "$versions_file"
+    exit 1
+  fi
+
+  # Build updates file: section\tname\tnew_spec\tchanged(0|1)
+  local updates_file
+  updates_file=$(mktemp)
+  local updates_needed=0
+
+  echo ""
+  while IFS= read -r pkg_name; do
+    [ -z "$pkg_name" ] && continue
+
+    local latest
+    latest=$(awk -F'\t' -v n="$pkg_name" '$1==n {print $2; exit}' "$versions_file")
+    [ -z "$latest" ] && continue
+
+    echo -e "${COLOR_CYAN}${pkg_name}${COLOR_RESET}"
+
+    while IFS=$'\t' read -r section name current; do
+      [ "$name" != "$pkg_name" ] && continue
+
+      local split op bare new_spec
+      split=$(split_version_spec "$current")
+      op="${split%%|*}"
+      bare="${split#*|}"
+      new_spec="${op}${latest}"
+
+      if [ "$bare" = "$latest" ]; then
+        printf "  %-18s %s %s\n" "${section}:" "$current" "$(echo -e "${COLOR_DIM}(up to date)${COLOR_RESET}")"
+        printf '%s\t%s\t%s\t0\n' "$section" "$name" "$new_spec" >>"$updates_file"
+      else
+        printf "  %-18s %s  →  %s\n" "${section}:" "$current" "$(echo -e "${COLOR_GREEN}${new_spec}${COLOR_RESET}")"
+        printf '%s\t%s\t%s\t1\n' "$section" "$name" "$new_spec" >>"$updates_file"
+        updates_needed=1
+      fi
+    done <<<"$matches"
+  done <<<"$package_names"
+  echo ""
+
+  if [ "$updates_needed" -eq 0 ]; then
+    rm -f "$versions_file" "$updates_file"
+    log_message "success" "Everything already up to date"
+    exit 0
+  fi
+
+  read -r -p "Apply updates & npm install? [y/N]: " answer
+  case "${answer}" in
+    y|Y|yes|YES) ;;
+    *)
+      rm -f "$versions_file" "$updates_file"
+      log_message "info" "Cancelled"
+      exit 0
+      ;;
+  esac
+
+  # Apply only changed rows via jq --arg
+  local result="$pkg_json"
+  while IFS=$'\t' read -r section name new_spec changed; do
+    [ "$changed" != "1" ] && continue
+    result=$(echo "$result" | jq --arg s "$section" --arg n "$name" --arg v "$new_spec" '.[$s][$n] = $v')
+  done <"$updates_file"
+
+  local tmp_pkg
+  tmp_pkg=$(mktemp)
+  if ! echo "$result" | jq '.' >"$tmp_pkg"; then
+    rm -f "$tmp_pkg" "$versions_file" "$updates_file"
+    log_message "error" "Failed to update package.json"
+    exit 1
+  fi
+  mv "$tmp_pkg" package.json
+  rm -f "$versions_file" "$updates_file"
+  log_message "success" "Updated package.json"
+
+  log_message "info" "Running npm install..."
+  if npm install; then
+    log_message "success" "Done"
+  else
+    log_message "error" "npm install failed"
+    exit 1
+  fi
+}
+
+# --- Main ---
+ensure_jq
+ensure_setup
+
+case "${1:-}" in
+  -a|--add)
+    add_alias "${2:-}" "${3:-}"
+    ;;
+  -l|--list)
+    list_aliases
+    ;;
+  -d|--delete|--rm)
+    delete_alias "${2:-}"
+    ;;
+  help|-h|--help|"")
+    print_usage
+    ;;
+  -*)
+    log_message "error" "Unknown option: $1"
+    print_usage
+    exit 1
+    ;;
+  *)
+    bump_alias "$1"
+    ;;
+esac
